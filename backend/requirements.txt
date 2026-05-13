@@ -1,2 +1,8 @@
-fastapi
-uvicorn
+fastapi[standard]
+sqlmodel
+asyncpg
+python-dotenv
+alembic
+passlib[bcrypt]
+python-jose[cryptography]
+python-multipart
