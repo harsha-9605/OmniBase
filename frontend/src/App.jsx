@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
+import api from './api'
 import SignUp from './SignUp'
 import Workspace from './Workspace'
 
@@ -48,14 +49,41 @@ const messages = [
 ]
 
 function App() {
-  const [view, setView] = useState('landing') // 'landing' | 'signup' | 'signin' | 'workspace'
-  const [userEmail, setUserEmail] = useState('')
+  const [view, setView] = useState(() => {
+    if (localStorage.getItem('omnibase_token')) {
+      return 'workspace'
+    }
+    return 'landing'
+  }) // 'landing' | 'signup' | 'signin' | 'workspace'
+  const [userProfile, setUserProfile] = useState(null)
+
+  useEffect(() => {
+    // Cleanup legacy localStorage items
+    localStorage.removeItem('omnibase_active_ws')
+    localStorage.removeItem('omnibase_workspaces')
+
+    const fetchProfile = async () => {
+      if (localStorage.getItem('omnibase_token')) {
+        try {
+          const res = await api.get('/accounts/me')
+          setUserProfile(res.data)
+        } catch (err) {
+          console.error("Failed to fetch user profile", err)
+        }
+      }
+    }
+    fetchProfile()
+  }, [])
 
   if (view === 'workspace') {
     return (
       <Workspace
-        userEmail={userEmail || 'user@example.com'}
-        onBack={() => setView('landing')}
+        userProfile={userProfile}
+        onBack={() => {
+          localStorage.removeItem('omnibase_token')
+          localStorage.removeItem('omnibase_last_tenant')
+          setView('landing')
+        }}
       />
     )
   }
@@ -65,7 +93,7 @@ function App() {
       <SignUp
         mode={view}
         onBack={() => setView('landing')}
-        onContinue={(email) => { setUserEmail(email); setView('workspace') }}
+        onContinue={(profile) => { setUserProfile(profile); setView('workspace') }}
       />
     )
   }

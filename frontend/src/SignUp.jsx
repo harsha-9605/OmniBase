@@ -1,12 +1,81 @@
 import { useState } from 'react'
+import { useGoogleLogin } from '@react-oauth/google'
+import api from './api'
 
 function SignUp({ onBack, onContinue, mode = 'signup' }) {
   const isSignIn = mode === 'signin'
+  const [name, setName] = useState('')
   const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [error, setError] = useState('')
+  const [loading, setLoading] = useState(false)
 
-  const handleSubmit = (e) => {
+  const [googleLoading, setGoogleLoading] = useState(false)
+
+  // Google One-Tap / popup sign-in handler
+  const handleGoogleLogin = useGoogleLogin({
+    onSuccess: async (tokenResponse) => {
+      // tokenResponse.access_token is a Google OAuth access token
+      // We need to exchange it for user info to get the ID token.
+      // @react-oauth/google's useGoogleLogin returns an access_token,
+      // so we fetch user info from Google then call our backend.
+      setGoogleLoading(true)
+      setError('')
+      try {
+        // Get user profile from Google
+        const userInfoRes = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+          headers: { Authorization: `Bearer ${tokenResponse.access_token}` }
+        })
+        const userInfo = await userInfoRes.json()
+        
+        // Send to our backend (using the access token approach)
+        const res = await api.post('/auth/google-token', {
+          access_token: tokenResponse.access_token,
+          name: userInfo.name,
+          email: userInfo.email,
+        })
+        
+        const { access_token, name: userName, email: userEmail, tenant_id } = res.data
+        localStorage.setItem('omnibase_token', access_token)
+        if (tenant_id) localStorage.setItem('omnibase_last_tenant', tenant_id.toString())
+        onContinue({ name: userName, email: userEmail })
+      } catch (err) {
+        setError(err.response?.data?.detail || 'Google sign-in failed. Please try again.')
+      } finally {
+        setGoogleLoading(false)
+      }
+    },
+    onError: () => setError('Google sign-in was cancelled or failed.'),
+    flow: 'implicit',
+  })
+
+  const handleSubmit = async (e) => {
     e.preventDefault()
-    if (email.trim()) onContinue(email.trim())
+    setError('')
+    setLoading(true)
+
+    try {
+      let res;
+      if (isSignIn) {
+        res = await api.post('/accounts/login', { email, password })
+      } else {
+        res = await api.post('/auth/signup', { name, email, password })
+      }
+      
+      const { access_token, name: userName, email: userEmail, tenant_id } = res.data
+      localStorage.setItem('omnibase_token', access_token)
+      
+      // If we got a tenant_id, save it for the UI (not needed for auth anymore, just UI display)
+      if (tenant_id) {
+        localStorage.setItem('omnibase_last_tenant', tenant_id.toString())
+      }
+      
+      onContinue({ name: userName, email: userEmail })
+    } catch (err) {
+      setError(err.response?.data?.detail || 'An error occurred. Please try again.')
+    } finally {
+      setLoading(false)
+    }
   }
 
   return (
@@ -27,7 +96,7 @@ function SignUp({ onBack, onContinue, mode = 'signup' }) {
         {/* Card */}
         <div className="w-full bg-[#16161f] rounded-2xl p-8 md:p-10 border border-white/8 shadow-[0_0_0_1px_rgba(255,255,255,0.03),0_24px_60px_rgba(0,0,0,0.5),0_0_60px_rgba(124,92,252,0.08)] animate-fade-in-up" id="auth-card">
           <h1 className="text-2xl sm:text-3xl font-extrabold text-center tracking-tight text-[#f0f0ff] mb-2 leading-tight" id="auth-heading">
-            {isSignIn ? 'Welcome back' : 'First, enter your email'}
+            {isSignIn ? 'Welcome back' : 'Create your account'}
           </h1>
           <p className="text-sm text-text-secondary text-center mb-7 leading-relaxed">
             {isSignIn
@@ -36,6 +105,21 @@ function SignUp({ onBack, onContinue, mode = 'signup' }) {
           </p>
 
           <form className="flex flex-col gap-3.5 mb-5" id="auth-form" onSubmit={handleSubmit}>
+            {!isSignIn && (
+              <div className="flex flex-col">
+                <input
+                  id="auth-name"
+                  type="text"
+                  className="w-full px-4 py-3.5 text-[14.5px] text-text-primary bg-white/5 border border-white/12 rounded-xl placeholder-brand-accent/40 focus:border-brand-accent focus:bg-brand-accent/5 focus:shadow-[0_0_0_3px_rgba(124,92,252,0.2)] outline-none transition-all"
+                  placeholder="Full Name"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  autoFocus
+                  required
+                />
+              </div>
+            )}
+            
             <div className="flex flex-col">
               <input
                 id="auth-email"
@@ -44,25 +128,31 @@ function SignUp({ onBack, onContinue, mode = 'signup' }) {
                 placeholder="name@work-email.com"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                autoFocus
+                autoFocus={isSignIn}
                 required
               />
             </div>
 
-            {isSignIn && (
-              <div className="flex flex-col">
-                <input
-                  id="auth-password"
-                  type="password"
-                  className="w-full px-4 py-3.5 text-[14.5px] text-text-primary bg-white/5 border border-white/12 rounded-xl placeholder-brand-accent/40 focus:border-brand-accent focus:bg-brand-accent/5 focus:shadow-[0_0_0_3px_rgba(124,92,252,0.2)] outline-none transition-all"
-                  placeholder="Password"
-                  required
-                />
+            <div className="flex flex-col">
+              <input
+                id="auth-password"
+                type="password"
+                className="w-full px-4 py-3.5 text-[14.5px] text-text-primary bg-white/5 border border-white/12 rounded-xl placeholder-brand-accent/40 focus:border-brand-accent focus:bg-brand-accent/5 focus:shadow-[0_0_0_3px_rgba(124,92,252,0.2)] outline-none transition-all"
+                placeholder="Password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
+              />
+            </div>
+            
+            {error && (
+              <div className="text-red-400 text-sm font-medium text-center">
+                {error}
               </div>
             )}
 
-            <button type="submit" className="w-full py-3.5 text-sm font-bold text-white bg-gradient-to-r from-brand-accent to-brand-accent-2 hover:to-[#a259ff] rounded-xl cursor-pointer shadow-[0_0_28px_rgba(124,92,252,0.4)] hover:shadow-[0_0_40px_rgba(124,92,252,0.5)] hover:-translate-y-0.5 transition-all tracking-wide" id="auth-submit">
-              {isSignIn ? 'Sign in' : 'Continue'}
+            <button type="submit" disabled={loading} className="w-full py-3.5 text-sm font-bold text-white bg-gradient-to-r from-brand-accent to-brand-accent-2 hover:to-[#a259ff] rounded-xl cursor-pointer shadow-[0_0_28px_rgba(124,92,252,0.4)] hover:shadow-[0_0_40px_rgba(124,92,252,0.5)] hover:-translate-y-0.5 transition-all tracking-wide disabled:opacity-50" id="auth-submit">
+              {loading ? 'Processing...' : (isSignIn ? 'Sign in' : 'Continue')}
             </button>
           </form>
 
@@ -75,7 +165,12 @@ function SignUp({ onBack, onContinue, mode = 'signup' }) {
 
           {/* Social Logins */}
           <div className="flex flex-col gap-2.5 mb-6" id="auth-social">
-            <button className="flex items-center justify-center gap-2.5 w-full py-3 px-4 text-sm font-semibold text-text-secondary hover:text-text-primary bg-white/4 border border-white/10 hover:border-white/18 rounded-xl cursor-pointer transition-all">
+            <button
+              type="button"
+              onClick={() => handleGoogleLogin()}
+              disabled={googleLoading}
+              className="flex items-center justify-center gap-2.5 w-full py-3 px-4 text-sm font-semibold text-text-secondary hover:text-text-primary bg-white/4 border border-white/10 hover:border-white/18 rounded-xl cursor-pointer transition-all disabled:opacity-60 disabled:cursor-not-allowed"
+            >
               <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true">
                 <path d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844c-.209 1.125-.843 2.078-1.796 2.717v2.258h2.908c1.702-1.567 2.684-3.875 2.684-6.615Z" fill="#4285F4"/>
                 <path d="M9 18c2.43 0 4.467-.806 5.956-2.18l-2.908-2.259c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332A8.997 8.997 0 0 0 9 18Z" fill="#34A853"/>

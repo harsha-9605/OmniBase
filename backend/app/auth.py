@@ -21,10 +21,9 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     return bcrypt.checkpw(plain_password.encode("utf-8"), hashed_password.encode("utf-8"))
 
 # ── JWT ────────────────────────────────────────────────────────────────────────
-def create_access_token(account_id: int, last_active_tenant_id: Optional[int]) -> str:
+def create_access_token(account_id: int) -> str:
     payload = {
         "sub": str(account_id),
-        "tenant_id": last_active_tenant_id,
         "exp": datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
     }
     return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)

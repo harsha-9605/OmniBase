@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Depends, HTTPException, status
+import os, re, urllib.request, json
+from fastapi import FastAPI, Depends, HTTPException, status, WebSocket, WebSocketDisconnect, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel, EmailStr
@@ -12,15 +13,29 @@ from app.models import (
     User, UserCreate,
     Account, AccountCreate,
     Project, ProjectCreate, ProjectRead,
+    Message, MessageRead,
 )
-from app.auth import hash_password, verify_password, create_access_token
+from app.auth import hash_password, verify_password, create_access_token, decode_access_token
 from app.dependencies import get_current_account, get_tenant_context, get_verified_membership
+from app.connection_manager import manager as ws_manager
+
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
 
 
 # ── Pydantic schema for JSON-body login ───────────────────────────────────────
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str
+
+class SignupRequest(BaseModel):
+    name: str
+    email: EmailStr
+    password: str
+
+class GoogleAuthRequest(BaseModel):
+    access_token: str
+    name: str
+    email: EmailStr
 
 
 @asynccontextmanager
@@ -90,6 +105,79 @@ async def register(
     return {"message": "Account created successfully", "account_id": account.id, "name": account.name}
 
 
+@app.post("/auth/signup", response_model=dict, tags=["Auth"])
+async def auth_signup(
+    body: SignupRequest,
+    session: AsyncSession = Depends(get_session),
+):
+    """Composite route: creates Account, default Tenant, and default Project."""
+    # 1. Check duplicate email
+    existing = await session.execute(
+        select(Account).where(Account.email == body.email)
+    )
+    if existing.scalar_one_or_none():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="An account with this email already exists.",
+        )
+
+    # 2. Create Account
+    account = Account(
+        name=body.name,
+        email=body.email,
+        hashed_password=hash_password(body.password),
+        last_active_tenant_id=None,
+    )
+    session.add(account)
+    await session.flush() # flush to get account.id
+
+    # 3. Create default Tenant
+    tenant_name = f"{body.name}'s Workspace"
+    import re
+    # Simple slug generation based on name + account ID
+    base_slug = re.sub(r'[^a-z0-9]+', '-', tenant_name.lower()).strip('-')
+    slug = f"{base_slug}-{account.id}"
+    
+    tenant = Tenant(name=tenant_name, slug=slug)
+    session.add(tenant)
+    await session.flush() # flush to get tenant.id
+    
+    # 4. Create User (Membership) - Admin
+    membership = User(
+        account_id=account.id,
+        tenant_id=tenant.id,
+        role="Admin",
+    )
+    session.add(membership)
+    
+    # 5. Create default Project
+    project = Project(
+        name="general",
+        description="General discussions and updates",
+        tenant_id=tenant.id,
+        created_by=account.id,
+    )
+    session.add(project)
+    
+    # 6. Update last_active_tenant_id
+    account.last_active_tenant_id = tenant.id
+    
+    await session.commit()
+    
+    # 7. Generate JWT
+    token = create_access_token(account_id=account.id)
+    
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "account_id": account.id,
+        "name": account.name,
+        "email": account.email,
+        "tenant_id": tenant.id,
+        "tenant_name": tenant.name
+    }
+
+
 @app.post("/token", tags=["Auth"])
 async def login(
     form_data: OAuth2PasswordRequestForm = Depends(),
@@ -113,7 +201,6 @@ async def login(
 
     token = create_access_token(
         account_id=account.id,
-        last_active_tenant_id=account.last_active_tenant_id,
     )
     return {"access_token": token, "token_type": "bearer"}
 
@@ -138,7 +225,6 @@ async def login_json(
 
     token = create_access_token(
         account_id=account.id,
-        last_active_tenant_id=account.last_active_tenant_id,
     )
     return {
         "access_token": token,
@@ -159,6 +245,107 @@ async def get_me(current_account: Account = Depends(get_current_account)):
         "last_active_tenant_id": current_account.last_active_tenant_id,
     }
 
+
+@app.post("/auth/google-token", response_model=dict, tags=["Auth"])
+async def google_auth(
+    body: GoogleAuthRequest,
+    session: AsyncSession = Depends(get_session),
+):
+    """Verify a Google access token and return an OmniBase JWT.
+
+    Flow:
+      1. Verify the access token with Google's userinfo endpoint securely.
+      2. Extract name, email from Google's verified response.
+      3. If account with this email already exists → log them in.
+      4. If new email → create Account + Tenant + User(Admin) + Project atomically.
+      5. Return our JWT (same shape as /auth/signup and /accounts/login).
+    """
+    # ── 1. Verify Google access token ──────────────────────────────────────
+    try:
+        req = urllib.request.Request(
+            "https://www.googleapis.com/oauth2/v3/userinfo",
+            headers={"Authorization": f"Bearer {body.access_token}"}
+        )
+        with urllib.request.urlopen(req) as response:
+            user_info = json.loads(response.read().decode())
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Invalid Google token: {str(e)}",
+        )
+
+    google_email: str = user_info.get("email", "").lower().strip()
+    google_name: str = user_info.get("name") or google_email.split("@")[0]
+
+    if not google_email:
+        raise HTTPException(status_code=400, detail="Google account has no email.")
+
+    if google_email != body.email.lower().strip():
+        raise HTTPException(status_code=400, detail="Email mismatch.")
+
+    # ── 2. Find or create account ──────────────────────────────────────
+    existing_result = await session.execute(
+        select(Account).where(Account.email == google_email)
+    )
+    account = existing_result.scalar_one_or_none()
+
+    if account:
+        # ── Existing user: just return a fresh JWT ────────────────────────
+        token = create_access_token(account_id=account.id)
+        return {
+            "access_token": token,
+            "token_type": "bearer",
+            "account_id": account.id,
+            "name": account.name,
+            "email": account.email,
+            "tenant_id": account.last_active_tenant_id,
+            "tenant_name": None,   # client can fetch /tenants/ to get the name
+            "is_new_user": False,
+        }
+
+    # ── New user: provision Account + Tenant + User + Project atomically ──
+    account = Account(
+        name=google_name,
+        email=google_email,
+        hashed_password="",   # No password — Google-only account
+        last_active_tenant_id=None,
+    )
+    session.add(account)
+    await session.flush()   # get account.id
+
+    tenant_name = f"{google_name}'s Workspace"
+    base_slug = re.sub(r'[^a-z0-9]+', '-', tenant_name.lower()).strip('-')
+    slug = f"{base_slug}-{account.id}"
+
+    tenant = Tenant(name=tenant_name, slug=slug)
+    session.add(tenant)
+    await session.flush()   # get tenant.id
+
+    membership = User(account_id=account.id, tenant_id=tenant.id, role="Admin")
+    session.add(membership)
+
+    project = Project(
+        name="general",
+        description="General discussions and updates",
+        tenant_id=tenant.id,
+        created_by=account.id,
+    )
+    session.add(project)
+
+    account.last_active_tenant_id = tenant.id
+    await session.commit()
+
+    token = create_access_token(account_id=account.id)
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "account_id": account.id,
+        "name": account.name,
+        "email": account.email,
+        "tenant_id": tenant.id,
+        "tenant_name": tenant.name,
+        "is_new_user": True,
+    }
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TENANTS — Protected by auth + tenant context
@@ -227,7 +414,7 @@ async def add_member(
     return user
 
 
-@app.get("/users/", response_model=list[User], tags=["Users"])
+@app.get("/users/", response_model=list[dict], tags=["Users"])
 async def get_members(
     session: AsyncSession = Depends(get_session),
     membership: User = Depends(get_verified_membership),
@@ -235,9 +422,21 @@ async def get_members(
     """Returns all members of the current active tenant ONLY.
     Privacy Wall: only members of this tenant can see its member list."""
     result = await session.execute(
-        select(User).where(User.tenant_id == membership.tenant_id)
+        select(User, Account)
+        .join(Account, User.account_id == Account.id)
+        .where(User.tenant_id == membership.tenant_id)
     )
-    return list(result.scalars().all())
+    members = []
+    for user, account in result.all():
+        members.append({
+            "id": user.id,
+            "account_id": user.account_id,
+            "tenant_id": user.tenant_id,
+            "role": user.role,
+            "name": account.name,
+            "email": account.email
+        })
+    return members
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -315,3 +514,139 @@ async def delete_project(
     await session.delete(project)
     await session.commit()
     return {"message": f"Project '{project.name}' deleted successfully."}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MESSAGES — REST history + WebSocket real-time
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.get("/projects/{project_id}/messages", response_model=list[MessageRead], tags=["Messages"])
+async def get_message_history(
+    project_id: int,
+    limit: int = 50,
+    session: AsyncSession = Depends(get_session),
+    membership: User = Depends(get_verified_membership),
+):
+    """Return the last `limit` messages for a channel, newest at the bottom.
+    Privacy wall: the project must belong to the caller's active tenant."""
+    # First verify the project belongs to the caller's tenant
+    proj_result = await session.execute(
+        select(Project).where(
+            Project.id == project_id,
+            Project.tenant_id == membership.tenant_id,
+        )
+    )
+    if proj_result.scalar_one_or_none() is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Channel not found in your workspace.",
+        )
+
+    # Fetch last N messages joined with the account name
+    result = await session.execute(
+        select(Message, Account)
+        .join(Account, Message.account_id == Account.id)
+        .where(Message.project_id == project_id)
+        .order_by(Message.created_at.asc())
+        .limit(limit)
+    )
+
+    messages = []
+    for msg, account in result.all():
+        messages.append(MessageRead(
+            id=msg.id,
+            content=msg.content,
+            created_at=msg.created_at,
+            project_id=msg.project_id,
+            account_id=msg.account_id,
+            sender_name=account.name,
+        ))
+    return messages
+
+
+@app.websocket("/ws/{project_id}")
+async def websocket_endpoint(
+    websocket: WebSocket,
+    project_id: int,
+    token: str = Query(...),
+    session: AsyncSession = Depends(get_session),
+):
+    """WebSocket endpoint for real-time chat in a channel.
+
+    Auth: JWT passed as ?token=<jwt> query param (browser WebSocket API
+    cannot set custom headers, so query-param auth is the standard pattern).
+
+    Lifecycle:
+      1. Verify token → load account → verify membership in target project's tenant
+      2. Register in ConnectionManager room for this project_id
+      3. On message receive → persist to DB → broadcast to all room members
+      4. On disconnect → remove from room cleanly
+    """
+    # ── 1. Authenticate & authorise ───────────────────────────────────────────
+    try:
+        payload = decode_access_token(token)
+        account_id = int(payload.get("sub"))
+    except Exception:
+        await websocket.close(code=4001)  # custom: Unauthorized
+        return
+
+    # Load account
+    acc_result = await session.execute(select(Account).where(Account.id == account_id))
+    account = acc_result.scalar_one_or_none()
+    if account is None:
+        await websocket.close(code=4001)
+        return
+
+    # Verify the project exists inside the account's active tenant
+    if account.last_active_tenant_id is None:
+        await websocket.close(code=4003)
+        return
+
+    proj_result = await session.execute(
+        select(Project).where(
+            Project.id == project_id,
+            Project.tenant_id == account.last_active_tenant_id,
+        )
+    )
+    if proj_result.scalar_one_or_none() is None:
+        await websocket.close(code=4003)
+        return
+
+    # ── 2. Accept & register ──────────────────────────────────────────────────
+    await ws_manager.connect(websocket, project_id)
+
+    try:
+        while True:
+            # ── 3. Receive, persist, broadcast ───────────────────────────────
+            data = await websocket.receive_json()
+            content = data.get("content", "").strip()
+            if not content:
+                continue
+
+            # Persist to database
+            msg = Message(
+                content=content,
+                project_id=project_id,
+                account_id=account.id,
+            )
+            session.add(msg)
+            await session.commit()
+            await session.refresh(msg)
+
+            # Build enriched broadcast payload
+            broadcast_payload = {
+                "id": msg.id,
+                "content": msg.content,
+                "created_at": msg.created_at.isoformat(),
+                "project_id": msg.project_id,
+                "account_id": msg.account_id,
+                "sender_name": account.name,
+            }
+
+            # Fan-out to all viewers in this channel room
+            await ws_manager.broadcast(broadcast_payload, project_id)
+
+    except WebSocketDisconnect:
+        # ── 4. Clean disconnect ───────────────────────────────────────────────
+        ws_manager.disconnect(websocket, project_id)
+

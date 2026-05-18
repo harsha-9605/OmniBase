@@ -71,3 +71,25 @@ class ProjectRead(ProjectBase):
     tenant_id: int
     created_by: int
     created_at: datetime
+
+
+# ── Message ───────────────────────────────────────────────────────────────────
+
+class Message(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    content: str
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+    # Foreign keys — links each message to its channel and its author
+    project_id: int = Field(foreign_key="project.id", index=True)
+    account_id: int = Field(foreign_key="account.id", index=True)
+
+
+class MessageRead(SQLModel):
+    """Response schema — enriched with the sender's display name."""
+    id: int
+    content: str
+    created_at: datetime
+    project_id: int
+    account_id: int
+    sender_name: str

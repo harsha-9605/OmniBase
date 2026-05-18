@@ -1,0 +1,1056 @@
+import { useState, useEffect, useRef, useCallback } from 'react'
+import api from './api'
+
+function Home({ tenantId, workspaceName, userProfile, onBack }) {
+  const wsName = workspaceName || 'My Workspace'
+  
+  // Get initials from wsName
+  const wsInitials = wsName
+    .split(' ')
+    .map(w => w[0])
+    .join('')
+    .toUpperCase()
+    .slice(0, 2)
+
+  const ownerName = userProfile?.name || 'Team Member'
+
+  // Dynamic Channel Naming based on workspace/project name with hyphens
+  const dynamicAllChannelName = 'all-' + wsName.toLowerCase().replace(/\s+/g, '-')
+
+  const [channels, setChannels] = useState([
+    { id: 'new', name: 'new-channel' },
+    { id: 'all', name: dynamicAllChannelName },
+    { id: 'fun', name: 'fun&chat' }
+  ])
+  const [favourites, setFavourites] = useState([])
+  const [draggedChannel, setDraggedChannel] = useState(null)
+  const [isDragOverFav, setIsDragOverFav] = useState(false)
+
+  // Fetch projects (channels) and users (members) from backend
+  useEffect(() => {
+    if (!tenantId) return;
+    
+    const fetchChannelsAndUsers = async () => {
+      try {
+        const [channelsRes, usersRes] = await Promise.all([
+          api.get('/projects/'),
+          api.get('/users/')
+        ])
+        
+        if (channelsRes.data && channelsRes.data.length > 0) {
+          const mappedChannels = channelsRes.data.map(p => ({
+            id: p.id.toString(),
+            name: p.name
+          }))
+          setChannels(mappedChannels)
+
+          // Auto-connect to the first channel
+          const first = mappedChannels[0]
+          switchChannel(first.id, first.name)
+        }
+        
+        if (usersRes.data) {
+          const others = usersRes.data.filter(u => u.email !== userProfile?.email)
+          setInvitedList(others)
+        }
+      } catch (err) {
+        console.error("Failed to fetch dashboard data", err)
+      }
+    }
+    
+    fetchChannelsAndUsers()
+  }, [tenantId])
+
+  // Direct Messages Invited List State
+  const [invitedList, setInvitedList] = useState([])
+
+  // ── Live Chat State ──────────────────────────────────────────────────
+  const [channelMessages, setChannelMessages] = useState([])
+  const [newMessageText, setNewMessageText] = useState('')
+  const [activeChannel, setActiveChannel] = useState('')
+  const [activeProjectId, setActiveProjectId] = useState(null)
+  const [showWsMenu, setShowWsMenu] = useState(false)
+  const [showInviteModal, setShowInviteModal] = useState(false)
+  const [showChannelDetails, setShowChannelDetails] = useState(false)
+  const [inviteEmailInput, setInviteEmailInput] = useState('')
+  const [inviteSuccess, setInviteSuccess] = useState(false)
+  const [showRightSidebar, setShowRightSidebar] = useState(false)
+  const [selectedProfile, setSelectedProfile] = useState(null)
+
+  // WebSocket ref — holds the live connection instance
+  const wsRef = useRef(null)
+  // Auto-scroll ref — scrolls to bottom on new messages
+  const messagesEndRef = useRef(null)
+
+  // Helper to format a raw API message into the UI shape
+  const formatMsg = (m) => ({
+    id: m.id,
+    sender: m.sender_name,
+    initials: m.sender_name ? m.sender_name[0].toUpperCase() : '?',
+    time: new Date(m.created_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }),
+    text: m.content,
+  })
+
+  // Switch channel: close old WS, load history, open new WS
+  const switchChannel = useCallback(async (projectId, channelName) => {
+    // 1. Close any existing WebSocket cleanly
+    if (wsRef.current) {
+      wsRef.current.onclose = null  // prevent auto-reconnect side-effects
+      wsRef.current.close()
+      wsRef.current = null
+    }
+
+    setActiveChannel('# ' + channelName)
+    setActiveProjectId(projectId)
+    setChannelMessages([])
+
+    // 2. Load message history via REST
+    try {
+      const res = await api.get(`/projects/${projectId}/messages`)
+      setChannelMessages(res.data.map(formatMsg))
+    } catch (err) {
+      console.error('Failed to load message history', err)
+    }
+
+    // 3. Open WebSocket for real-time updates
+    const token = localStorage.getItem('omnibase_token')
+    if (!token) return
+
+    const wsUrl = `ws://localhost:8000/ws/${projectId}?token=${token}`
+    const ws = new WebSocket(wsUrl)
+
+    ws.onmessage = (event) => {
+      const msg = JSON.parse(event.data)
+      setChannelMessages(prev => [...prev, formatMsg(msg)])
+    }
+
+    ws.onerror = (err) => console.error('WebSocket error', err)
+
+    ws.onclose = () => {
+      // Only nullify if this is still the current ws (avoid race conditions)
+      if (wsRef.current === ws) wsRef.current = null
+    }
+
+    wsRef.current = ws
+  }, [])
+
+  // Auto-scroll to bottom when new messages arrive
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [channelMessages])
+
+  // Cleanup WebSocket on component unmount
+  useEffect(() => {
+    return () => {
+      if (wsRef.current) {
+        wsRef.current.onclose = null
+        wsRef.current.close()
+      }
+    }
+  }, [])
+
+  // Send message through the open WebSocket
+  const handleSendMessage = () => {
+    if (!newMessageText.trim() || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return
+    wsRef.current.send(JSON.stringify({ content: newMessageText.trim() }))
+    setNewMessageText('')
+  }
+
+  return (
+    <div className="flex h-screen w-screen overflow-hidden bg-[#131619] text-[#f0f0ff] font-sans select-none fixed inset-0 z-50 text-left">
+      {/* Left Sidebar perfectly matching premium workspace dark aesthetic */}
+      <aside className="w-[320px] bg-[#0b0f12] border-r border-white/5 flex flex-col justify-between shrink-0 text-sm">
+        {/* Sidebar Top Header Switcher */}
+        <div className="h-14 px-4 border-b border-white/5 flex items-center justify-between relative">
+          <button 
+            onClick={() => setShowWsMenu(!showWsMenu)}
+            className="flex items-center gap-2.5 font-bold text-white hover:opacity-80 transition-opacity cursor-pointer text-left min-w-0"
+          >
+            <div className="w-7 h-7 rounded bg-[#0d9488] text-black font-extrabold text-xs flex items-center justify-center shrink-0 shadow-sm">
+              {wsInitials}
+            </div>
+            <span className="truncate text-[15px] tracking-tight">{wsName}</span>
+            <svg className="w-3.5 h-3.5 text-white/50 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M6 9l6 6 6-6" />
+            </svg>
+          </button>
+          
+          <button 
+            onClick={onBack}
+            title="Close Dashboard" 
+            className="text-white/40 hover:text-white transition-colors cursor-pointer p-1 rounded hover:bg-white/5 font-bold text-xs"
+          >
+            ✕
+          </button>
+
+          {/* Dropdown Menu to switch or exit */}
+          {showWsMenu && (
+            <div className="absolute top-full left-2 w-60 bg-[#1e2329] border border-white/10 rounded-xl shadow-2xl py-2 z-50 animate-fade-in">
+              <div className="px-3 py-1.5 text-xs font-bold text-white/40 uppercase tracking-wider">Active Workspace</div>
+              <div className="px-3 py-2 flex items-center gap-2.5 text-white bg-white/5">
+                <div className="w-6 h-6 rounded bg-[#0d9488] text-black font-extrabold text-[11px] flex items-center justify-center">
+                  {wsInitials}
+                </div>
+                <span className="truncate font-medium text-sm">{wsName}</span>
+              </div>
+              
+              <div className="my-1.5 border-t border-white/5" />
+              
+              <button 
+                onClick={() => { setShowWsMenu(false); onBack(); }}
+                className="w-full px-3 py-2 text-left text-xs text-white/70 hover:text-white hover:bg-white/5 transition-colors flex items-center gap-2 cursor-pointer font-medium"
+              >
+                <svg className="w-4 h-4 text-white/50" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M10 19l-7-7m0 0l7-7m-7 7h18"></path>
+                </svg>
+                Exit to Workspace Selector
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* Sidebar Scrollable Sections */}
+        <div className="flex-1 overflow-y-auto py-3 px-2 flex flex-col gap-4 text-[#c8c8d8]">
+          {/* Main Tabs */}
+          <div className="flex flex-col gap-0.5">
+            <button className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg bg-white/8 text-white font-medium cursor-pointer transition-colors text-left">
+              <svg className="w-4 h-4 text-white shrink-0" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/>
+              </svg>
+              <span>Home</span>
+            </button>
+            {/* DMs Button with Hover Popover */}
+            <div className="group">
+              <button className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg hover:bg-white/4 text-white/70 hover:text-white font-medium cursor-pointer transition-colors text-left">
+                <svg className="w-4 h-4 text-white/60 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+                </svg>
+                <span>DMs</span>
+              </button>
+              
+              {/* DMs Popover Menu */}
+              <div className="fixed left-[320px] top-[106px] pl-3 w-[392px] opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 z-[100] translate-y-1 group-hover:translate-y-0">
+                <div className="bg-[#1e2329] border border-white/10 rounded-xl shadow-2xl overflow-hidden flex flex-col max-h-[500px]">
+                  <div className="px-4 py-3 border-b border-white/5 flex items-center justify-between bg-[#1b1f24] shrink-0">
+                    <h3 className="font-bold text-white text-[15px]">Direct messages</h3>
+                    <div className="flex items-center gap-2 text-xs text-white/60 font-medium">
+                      <span>Unreads</span>
+                      <div className="w-8 h-4 bg-white/10 rounded-full relative cursor-pointer hover:bg-white/20 transition-colors">
+                        <div className="w-3.5 h-3.5 bg-white/60 rounded-full absolute left-0.5 top-[1px]"></div>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="p-2 flex flex-col gap-1 overflow-y-auto">
+                    <div 
+                      onClick={() => {
+                        setActiveChannel(ownerName + ' (you)');
+                        setSelectedProfile({
+                          name: ownerName,
+                          initials: ownerName ? ownerName[0].toUpperCase() : 'H',
+                          email: 'You'
+                        });
+                        setShowRightSidebar(true);
+                      }}
+                      className="p-2 flex items-start gap-3 rounded-lg hover:bg-white/5 cursor-pointer transition-colors"
+                    >
+                      <div className="w-9 h-9 rounded-md bg-[#d81b60] text-white font-bold text-sm flex items-center justify-center shrink-0 relative mt-0.5">
+                        {ownerName ? ownerName[0].toUpperCase() : 'H'}
+                        <div className="absolute -bottom-1 -right-1 w-3.5 h-3.5 rounded-full bg-emerald-500 border-[2.5px] border-[#1e2329]" />
+                      </div>
+                      <div className="flex flex-col flex-1 min-w-0">
+                        <div className="flex items-center gap-1.5">
+                          <span className="font-bold text-white text-[15px] truncate">{ownerName}</span>
+                          <span className="text-[11px] text-white/50">(you)</span>
+                        </div>
+                        <p className="text-[13px] text-white/60 leading-snug mt-0.5 max-w-[280px]">This is your space. Draft messages, list your to-dos, or keep links and files handy.</p>
+                      </div>
+                    </div>
+                    
+                    {invitedList.length > 0 && invitedList.map((rawEmail, i) => {
+                      const email = rawEmail.trim();
+                      if (!email) return null;
+                      const name = email.split('@')[0];
+                      return (
+                        <div 
+                          key={i} 
+                          onClick={() => {
+                            setActiveChannel(name);
+                            setSelectedProfile({
+                              name: name,
+                              initials: name[0].toUpperCase(),
+                              email: email
+                            });
+                            setShowRightSidebar(true);
+                          }}
+                          className="p-2 flex items-start gap-3 rounded-lg hover:bg-white/5 cursor-pointer transition-colors border-t border-white/5 mt-1 pt-3"
+                        >
+                          <div className="w-9 h-9 rounded-md bg-indigo-500 text-white font-bold text-sm flex items-center justify-center shrink-0 relative mt-0.5">
+                            {name[0].toUpperCase()}
+                            <div className="absolute -bottom-1 -right-1 w-3.5 h-3.5 rounded-full bg-transparent border-[2.5px] border-white/40" />
+                          </div>
+                          <div className="flex flex-col flex-1 min-w-0 justify-center">
+                            <span className="font-bold text-white text-[15px] truncate">{name}</span>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Activity Button with Hover Popover */}
+            <div className="group">
+              <button className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg hover:bg-white/4 text-white/70 hover:text-white font-medium cursor-pointer transition-colors text-left">
+                <svg className="w-4 h-4 text-white/60 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
+                  <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
+                </svg>
+                <span>Activity</span>
+              </button>
+              
+              {/* Activity Popover Menu */}
+              <div className="fixed left-[320px] top-[144px] pl-3 w-[392px] opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 z-[100] translate-y-1 group-hover:translate-y-0">
+                <div className="bg-[#1e2329] border border-white/10 rounded-xl shadow-2xl overflow-hidden flex flex-col h-[350px]">
+                  <div className="px-4 pt-3 border-b border-white/5 flex items-center justify-between bg-[#1b1f24] shrink-0">
+                    <div className="flex items-center gap-4 text-[15px] font-bold">
+                      <span className="text-white cursor-pointer relative pb-2.5">Activity<div className="absolute bottom-0 left-0 right-0 h-0.5 bg-[#2dd4bf] rounded-t-full"></div></span>
+                      <span className="text-white/50 hover:text-white cursor-pointer pb-2.5">All</span>
+                      <span className="text-white/50 hover:text-white cursor-pointer pb-2.5">DMs</span>
+                    </div>
+                    <div className="flex items-center gap-2 text-xs text-white/60 font-medium mb-2.5">
+                      <span>Unreads</span>
+                      <div className="w-8 h-4 bg-white/10 rounded-full relative cursor-pointer hover:bg-white/20 transition-colors">
+                        <div className="w-3.5 h-3.5 bg-white/60 rounded-full absolute left-0.5 top-[1px]"></div>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex-1 flex flex-col items-center justify-center p-6 text-center">
+                    <div className="w-14 h-14 bg-[#78b368] rounded-xl flex items-center justify-center mb-5 shadow-inner">
+                      <span className="text-2xl text-white">✓</span>
+                    </div>
+                    <h3 className="text-[17px] font-bold text-white mb-2">All caught up</h3>
+                    <p className="text-[15px] text-white/60 leading-relaxed max-w-[280px]">Looks like things are quiet for now. When there's new activity, it'll be here.</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Directories Section */}
+          <div className="flex flex-col gap-1">
+            <div className="flex items-center justify-between px-2 py-1 text-white/40 hover:text-white/70 cursor-pointer transition-colors text-xs font-semibold tracking-wide">
+              <span className="flex items-center gap-1.5">
+                <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 9l6 6 6-6"/></svg>
+                Directories
+              </span>
+            </div>
+          </div>
+
+          {/* Favourites Section */}
+          <div 
+            className={`flex flex-col gap-1 rounded-lg transition-all ${isDragOverFav ? 'bg-amber-500/10 ring-1 ring-amber-500/40 p-1' : ''}`}
+            onDragOver={(e) => {
+              e.preventDefault();
+              setIsDragOverFav(true);
+            }}
+            onDragLeave={() => setIsDragOverFav(false)}
+            onDrop={(e) => {
+              e.preventDefault();
+              setIsDragOverFav(false);
+              if (draggedChannel) {
+                if (!favourites.some(f => f.id === draggedChannel.id)) {
+                  setFavourites(prev => [...prev, draggedChannel]);
+                  setChannels(prev => prev.filter(c => c.id !== draggedChannel.id));
+                }
+                setDraggedChannel(null);
+              }
+            }}
+          >
+            <div className="flex items-center justify-between px-2 py-1 text-white/40 hover:text-white/70 cursor-pointer transition-colors text-xs font-semibold tracking-wide">
+              <span className="flex items-center gap-1.5">
+                <svg className="w-3.5 h-3.5 text-amber-400/70 shrink-0" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
+                Favourites
+              </span>
+              {favourites.length > 0 && (
+                <span className="text-[10px] text-amber-400/60 bg-amber-400/10 px-1.5 py-0.25 rounded-full font-bold">
+                  {favourites.length}
+                </span>
+              )}
+            </div>
+
+            {favourites.length === 0 ? (
+              <div className="px-6 py-1.5 text-[11px] text-white/30 italic border border-dashed border-white/5 rounded mx-2 text-left">
+                Drag channels here to star them
+              </div>
+            ) : (
+              <div className="flex flex-col gap-0.5 mt-0.5">
+                {favourites.map(c => (
+                  <div 
+                    key={c.id}
+                    className={`w-full flex items-center justify-between px-6 py-1.5 rounded-md text-[13px] font-medium transition-colors group ${
+                      activeChannel === '# ' + c.name
+                        ? 'bg-[#0d9488]/20 text-[#2dd4bf] font-semibold'
+                        : 'text-white/80 hover:text-white hover:bg-white/4'
+                    }`}
+                  >
+                    <button
+                      onClick={() => switchChannel(c.id, c.name)}
+                      className="flex items-center gap-2 flex-1 min-w-0 text-left bg-transparent border-none p-0 cursor-pointer text-inherit font-inherit"
+                    >
+                      <span className="text-amber-400/80 text-xs shrink-0">★</span>
+                      <span className="truncate">{c.name}</span>
+                    </button>
+                    
+                    <button
+                      title="Remove from Favourites"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setFavourites(prev => prev.filter(f => f.id !== c.id));
+                        setChannels(prev => [...prev, c]);
+                      }}
+                      className="opacity-0 group-hover:opacity-100 text-white/40 hover:text-amber-400 transition-all cursor-pointer bg-transparent border-none p-0 text-xs ml-1 shrink-0"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Channels Section */}
+          <div className="flex flex-col gap-1">
+            <div className="flex items-center justify-between px-2 py-1 text-white/40 hover:text-white/70 cursor-pointer transition-colors text-xs font-semibold tracking-wide">
+              <span className="flex items-center gap-1.5">
+                <svg className="w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 9l6 6 6-6"/></svg>
+                Channels
+              </span>
+            </div>
+            <div className="flex flex-col gap-0.5 mt-0.5">
+              {channels.map(c => (
+                <div 
+                  key={c.id}
+                  draggable
+                  onDragStart={() => setDraggedChannel(c)}
+                  onDragEnd={() => setDraggedChannel(null)}
+                  className={`w-full flex items-center justify-between px-6 py-1.5 rounded-md text-[13px] font-medium transition-colors cursor-grab active:cursor-grabbing group ${
+                    activeChannel === '# ' + c.name
+                      ? 'bg-[#0d9488]/20 text-[#2dd4bf] font-semibold'
+                      : 'text-white/60 hover:text-white hover:bg-white/4'
+                  }`}
+                >
+                  <button 
+                    onClick={() => switchChannel(c.id, c.name)}
+                    className="flex items-center gap-2 flex-1 min-w-0 text-left bg-transparent border-none p-0 cursor-pointer text-inherit font-inherit"
+                  >
+                    <span className="text-white/30 shrink-0 text-lg font-light leading-none mb-0.5">#</span>
+                    <span className="truncate">{c.name}</span>
+                  </button>
+
+                  <button
+                    title="Star Channel (Move to Favourites)"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (!favourites.some(f => f.id === c.id)) {
+                        setFavourites(prev => [...prev, c]);
+                        setChannels(prev => prev.filter(ch => ch.id !== c.id));
+                      }
+                    }}
+                    className="opacity-0 group-hover:opacity-100 text-white/30 hover:text-amber-400 transition-all cursor-pointer bg-transparent border-none p-0 text-xs ml-1 shrink-0"
+                  >
+                    ☆
+                  </button>
+                </div>
+              ))}
+              <button className="flex items-center gap-2 px-6 py-1.5 text-[13px] text-white/40 hover:text-white/70 transition-colors cursor-pointer text-left">
+                <span>+</span> Add channel
+              </button>
+            </div>
+          </div>
+
+          {/* Direct messages Section */}
+          <div className="flex flex-col gap-1">
+            <div className="flex items-center justify-between px-2 py-1 text-white/40 hover:text-white/70 cursor-pointer transition-colors text-xs font-semibold tracking-wide">
+              <span className="flex items-center gap-1.5">
+                <svg className="w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 9l6 6 6-6"/></svg>
+                Direct messages
+              </span>
+            </div>
+            <div className="flex flex-col gap-1 mt-0.5">
+              <button 
+                onClick={() => {
+                  setActiveChannel(ownerName + ' (you)');
+                  setSelectedProfile({
+                    name: ownerName,
+                    initials: ownerName ? ownerName[0].toUpperCase() : 'H',
+                    email: 'You'
+                  });
+                  setShowRightSidebar(true);
+                }}
+                className={`w-full flex items-center gap-3 px-6 py-2 rounded-md text-[14px] transition-colors cursor-pointer text-left font-medium ${
+                  activeChannel === ownerName + ' (you)' ? 'bg-[#0d9488]/20 text-[#2dd4bf] font-semibold' : 'text-white/80 hover:text-white hover:bg-white/4'
+                }`}
+              >
+                <div className="relative w-6 h-6 rounded bg-[#d81b60] text-white font-bold text-[11px] flex items-center justify-center shrink-0">
+                  {ownerName ? ownerName[0].toUpperCase() : 'H'}
+                  <div className="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full bg-emerald-500" />
+                </div>
+                <span className="truncate">{ownerName}</span>
+                <span className="text-[10px] px-1.5 py-0.5 bg-white/10 rounded text-white/50 ml-auto font-normal">you</span>
+              </button>
+
+              {invitedList.map((userObj, index) => {
+                const displayName = userObj.name || userObj.email.split('@')[0];
+                return (
+                  <button 
+                    key={index}
+                    onClick={() => {
+                      setActiveChannel(displayName);
+                      setSelectedProfile({
+                        name: displayName,
+                        initials: displayName[0].toUpperCase(),
+                        email: userObj.email
+                      });
+                      setShowRightSidebar(true);
+                    }}
+                    className={`w-full flex items-center gap-3 px-6 py-2 rounded-md text-[14px] transition-colors cursor-pointer text-left font-medium ${
+                      activeChannel === displayName ? 'bg-[#0d9488]/20 text-[#2dd4bf] font-semibold' : 'text-white/70 hover:text-white hover:bg-white/4'
+                    }`}
+                  >
+                    <div className="relative w-6 h-6 rounded bg-indigo-500 text-white font-bold text-[11px] flex items-center justify-center shrink-0">
+                      {displayName[0].toUpperCase()}
+                      <div className="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full bg-emerald-400" />
+                    </div>
+                    <span className="truncate">{displayName}</span>
+                  </button>
+                );
+              })}
+
+              <button 
+                onClick={() => setShowInviteModal(true)}
+                className="flex items-center gap-2 px-6 py-1.5 text-[13px] text-white/40 hover:text-white/70 transition-colors cursor-pointer text-left mt-0.5"
+              >
+                <span>+</span> Invite people
+              </button>
+            </div>
+          </div>
+
+          {/* Apps Section */}
+          <div className="flex flex-col gap-1">
+            <div className="flex items-center justify-between px-2 py-1 text-white/40 hover:text-white/70 cursor-pointer transition-colors text-xs font-semibold tracking-wide">
+              <span className="flex items-center gap-1.5">
+                <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 9l6 6 6-6"/></svg>
+                Apps
+              </span>
+            </div>
+            <button className="w-full flex items-center gap-2 px-6 py-1.5 rounded-md text-[13px] text-white/70 hover:text-white hover:bg-white/4 transition-colors cursor-pointer text-left">
+              <div className="w-4 h-4 rounded bg-gradient-to-tr from-amber-400 via-rose-500 to-sky-500 flex items-center justify-center shrink-0 text-[9px] text-white font-black">
+                ✦
+              </div>
+              <span className="truncate">Slackbot</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Sidebar Footer User Profile */}
+        <div className="h-14 px-3 border-t border-white/5 bg-[#080b0e] flex items-center justify-between cursor-pointer hover:bg-white/4 transition-colors">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="relative w-8 h-8 rounded-lg bg-[#d81b60] text-white font-bold text-xs flex items-center justify-center shrink-0">
+              {ownerName ? ownerName[0].toUpperCase() : 'H'}
+              <div className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-emerald-500 border-2 border-[#080b0e]" />
+            </div>
+            <div className="flex flex-col min-w-0 text-left">
+              <span className="text-[13px] font-bold text-white truncate">{ownerName}</span>
+              <span className="text-[10px] text-emerald-500 font-medium tracking-wide">Online</span>
+            </div>
+          </div>
+          <svg className="w-3.5 h-3.5 text-white/40 shrink-0 mr-1" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M6 9l6 6 6-6" />
+          </svg>
+        </div>
+      </aside>
+
+      {/* Main Interface Content Area */}
+      <div className="flex-1 flex flex-col min-w-0 bg-[#131619] relative">
+        
+        {/* Top Main Toolbar Header Bar */}
+        <header className="h-14 border-b border-white/5 px-6 flex items-center justify-between shrink-0 bg-[#131619]/90 backdrop-blur-md z-10">
+          {/* Search bar centered */}
+          <div className="flex-1 max-w-xl mx-auto">
+            <div className="relative w-full">
+              <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-white/30" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <circle cx="11" cy="11" r="8"></circle>
+                <path d="M21 21l-4.35-4.35"></path>
+              </svg>
+              <input 
+                type="text"
+                placeholder={`Search ${wsName}`}
+                className="w-full bg-white/5 border border-white/8 rounded-lg pl-9 pr-4 py-1.5 text-xs text-white placeholder-white/30 focus:outline-none focus:border-white/20 focus:bg-white/8 transition-all font-medium"
+              />
+            </div>
+          </div>
+
+          {/* Right Side Control Action Icons */}
+          <div className="flex items-center gap-1.5 shrink-0 ml-4">
+            {/* People Button */}
+            <div className="relative group">
+              <button 
+                onClick={() => setShowChannelDetails(true)}
+                className="flex items-center gap-1.5 px-2.5 py-1.5 border border-white/20 hover:bg-white/10 rounded-md text-white/80 transition-colors cursor-pointer"
+              >
+                <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
+                  <circle cx="9" cy="7" r="4"></circle>
+                  <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
+                  <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
+                </svg>
+                <span className="text-xs font-bold">{1 + invitedList.length}</span>
+              </button>
+              
+              {/* Tooltip */}
+              <div className="absolute top-full right-0 mt-2 w-56 bg-[#222529] border border-white/10 rounded-lg shadow-xl p-3 opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-50 text-center">
+                <div className="absolute -top-1.5 right-4 w-3 h-3 bg-[#222529] border-t border-l border-white/10 rotate-45"></div>
+                <div className="text-[13px] font-bold text-white mb-1 relative z-10">View all members of this channel</div>
+                <div className="text-[12px] text-white/60 relative z-10">Includes {invitedList.length > 0 ? (invitedList[0].name || invitedList[0].email.split('@')[0]) : 'you'}</div>
+              </div>
+            </div>
+
+            {/* Huddle Button */}
+            <button className="flex items-center gap-1 px-2.5 py-1.5 border border-white/20 hover:bg-white/10 rounded-md text-white/80 transition-colors cursor-pointer">
+              <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M3 18v-6a9 9 0 0 1 18 0v6"></path>
+                <path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z"></path>
+              </svg>
+              <svg className="w-3 h-3 text-white/50" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                <path d="M6 9l6 6 6-6" />
+              </svg>
+            </button>
+
+            {/* Bell Button */}
+            <button className="flex items-center justify-center w-8 h-8 border border-white/20 hover:bg-white/10 rounded-md text-white/80 transition-colors cursor-pointer">
+              <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
+                <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
+              </svg>
+            </button>
+
+            {/* Search Button */}
+            <button className="flex items-center justify-center w-8 h-8 border border-white/20 hover:bg-white/10 rounded-md text-white/80 transition-colors cursor-pointer">
+              <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <circle cx="11" cy="11" r="8"></circle>
+                <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+              </svg>
+            </button>
+
+            {/* More Button */}
+            <button className="flex items-center justify-center w-8 h-8 border border-white/20 hover:bg-white/10 rounded-md text-white/80 transition-colors cursor-pointer">
+              <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <circle cx="12" cy="12" r="1"></circle>
+                <circle cx="12" cy="5" r="1"></circle>
+                <circle cx="12" cy="19" r="1"></circle>
+              </svg>
+            </button>
+          </div>
+        </header>
+
+        {/* Main Content Area Top Tabs */}
+        <div className="flex-1 flex flex-col overflow-hidden relative">
+          
+          {/* Channel Active Top Header & Tabs */}
+          <div className="px-6 pt-4 border-b border-white/5 shrink-0 bg-[#131619]">
+            <h1 className="text-xl font-extrabold text-white tracking-tight flex items-center gap-1.5 mb-3 text-left">
+              {activeChannel}
+            </h1>
+
+            {/* Navigation Subtabs */}
+            <div className="flex items-center gap-6 text-xs font-semibold">
+              <button className="pb-2.5 text-[#2dd4bf] border-b-2 border-[#2dd4bf] cursor-pointer">
+                Messages
+              </button>
+              <button className="pb-2.5 text-white/50 hover:text-white/80 transition-colors cursor-pointer flex items-center gap-1.5">
+                <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+                  <line x1="12" y1="8" x2="12" y2="16"></line>
+                  <line x1="8" y1="12" x2="16" y2="12"></line>
+                </svg>
+                Add canvas
+              </button>
+              <button className="pb-2.5 text-white/50 hover:text-white/80 transition-colors cursor-pointer text-sm font-bold">
+                +
+              </button>
+            </div>
+          </div>
+
+          {/* Scrollable Flow: Actions Grid + Message Stream History */}
+          <div className="flex-1 overflow-y-auto p-6 flex flex-col justify-between">
+            
+            {/* Dynamic Welcome Heading Block */}
+            <div className="mb-8 animate-fade-in-up">
+              <div className="max-w-3xl text-left bg-[#181d22]/50 border border-white/5 rounded-xl p-8 hover:bg-[#1a2027]/70 transition-colors">
+                <h2 className="text-3xl font-extrabold text-white mb-4 tracking-tight flex items-center gap-3">
+                  {activeChannel === '# ' + dynamicAllChannelName && <>👋 Welcome to #{dynamicAllChannelName}</>}
+                  {activeChannel === '# new-channel' && <>✨ Welcome to #new-channel</>}
+                  {activeChannel === '# fun&chat' && <>☕ Have a little chat!</>}
+                  {activeChannel === ownerName + ' (you)' && <>📝 This is your space</>}
+                  {!activeChannel.startsWith('#') && activeChannel !== ownerName + ' (you)' && <>💬 Conversation with {activeChannel}</>}
+                </h2>
+                <p className="text-[15px] text-white/70 leading-relaxed font-medium">
+                  {activeChannel === '# ' + dynamicAllChannelName && (
+                    <><strong>Everyone is here!</strong> Share announcements, updates about project news 📰, company news 🏢, or events 🎉 with your teammates.</>
+                  )}
+                  {activeChannel === '# new-channel' && (
+                    <>This channel is focused around a specific topic 🎯. You can keep all project-related information here so everyone can access it easily 📁.</>
+                  )}
+                  {activeChannel === '# fun&chat' && (
+                    <>Other channels are for work, but this is for relaxation 🌴. Take a break, share a joke 😂, and casually chat with the team.</>
+                  )}
+                  {activeChannel === ownerName + ' (you)' && (
+                    <>Draft your messages, keep links and files handy 🗂️. And remember, it's perfectly fine to talk to yourself here! 🤖💬</>
+                  )}
+                  {!activeChannel.startsWith('#') && activeChannel !== ownerName + ' (you)' && (
+                    <>This is the beginning of your direct message history with <strong>{activeChannel}</strong>. Start a private conversation here 🔒.</>
+                  )}
+                </p>
+              </div>
+            </div>
+
+            {/* Chat Content Stream History */}
+            <div className="flex flex-col gap-4 mt-auto">
+              {/* Timeline Today Indicator Badge */}
+              <div className="flex items-center gap-3 my-2">
+                <span className="flex-1 h-[1px] bg-white/5" />
+                <span className="text-xs text-white/40 border border-white/8 rounded-full px-3 py-1 bg-[#131619] font-medium flex items-center gap-1">
+                  Today
+                  <svg className="w-3 h-3 text-white/40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 9l6 6 6-6"/></svg>
+                </span>
+                <span className="flex-1 h-[1px] bg-white/5" />
+              </div>
+
+              {/* Stream Loop */}
+              {channelMessages.map((msg) => (
+                <div key={msg.id} className="flex items-start gap-3 animate-fade-in text-left">
+                  <div className="w-9 h-9 rounded-lg bg-[#d81b60] text-white font-extrabold text-sm flex items-center justify-center shrink-0 mt-0.5 shadow-sm">
+                    {msg.initials}
+                  </div>
+                  <div className="flex flex-col min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className="text-[13px] font-bold text-white">{msg.sender}</span>
+                      <span className="text-[11px] text-white/40 font-normal">{msg.time}</span>
+                    </div>
+                    <p className="text-[13px] text-white/80 mt-1 leading-relaxed">
+                      {msg.text}
+                    </p>
+                  </div>
+                </div>
+              ))}
+              {/* Auto-scroll anchor */}
+              <div ref={messagesEndRef} />
+            </div>
+
+          </div>
+
+          {/* Bottom Rich Text Format Input Box perfectly formatted */}
+          <div className="p-4 pt-0 shrink-0 bg-[#131619]">
+            <div className="bg-[#1b1f24] border border-white/10 rounded-xl flex flex-col focus-within:border-white/20 focus-within:shadow-[0_0_15px_rgba(45,212,191,0.1)] transition-all">
+              
+              {/* Upper Styling Formatting Button Row */}
+              <div className="flex items-center gap-1.5 px-3 py-2 border-b border-white/5 text-white/40">
+                <button className="p-1 hover:text-white hover:bg-white/5 rounded font-bold text-base transition-colors cursor-pointer">B</button>
+                <button className="p-1 hover:text-white hover:bg-white/5 rounded font-serif italic text-base transition-colors cursor-pointer">I</button>
+                <button className="p-1 hover:text-white hover:bg-white/5 rounded line-through text-base transition-colors cursor-pointer">S</button>
+                <span className="w-[1px] h-4 bg-white/10 mx-1" />
+                <button className="p-1 hover:text-white hover:bg-white/5 rounded text-base transition-colors cursor-pointer">🔗</button>
+                <button className="p-1 hover:text-white hover:bg-white/5 rounded text-base transition-colors cursor-pointer">≣</button>
+                <button className="p-1 hover:text-white hover:bg-white/5 rounded text-base transition-colors cursor-pointer">㋡</button>
+                <button className="p-1 hover:text-white hover:bg-white/5 rounded font-mono text-base transition-colors cursor-pointer">&lt;/&gt;</button>
+                <button className="p-1 hover:text-white hover:bg-white/5 rounded text-base transition-colors cursor-pointer">⁺</button>
+              </div>
+
+              {/* Multiline interactive Entry box */}
+              <textarea 
+                rows="2"
+                value={newMessageText}
+                onChange={(e) => setNewMessageText(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    handleSendMessage();
+                  }
+                }}
+                placeholder={`Message ${activeChannel}`}
+                className="w-full bg-transparent text-white text-[13px] placeholder-white/30 p-3 resize-none focus:outline-none leading-relaxed"
+              />
+
+              {/* Bottom Addons & Complete Split Action Link */}
+              <div className="flex items-center justify-between px-3 py-2 border-t border-white/5">
+                <div className="flex items-center gap-2 text-white/50">
+                  <button className="w-6 h-6 rounded-full bg-white/5 hover:bg-white/10 flex items-center justify-center text-sm hover:text-white transition-colors cursor-pointer">+</button>
+                  <button className="p-1 hover:text-white transition-colors font-semibold text-base cursor-pointer">Aa</button>
+                  <button className="p-1 hover:text-white transition-colors text-base cursor-pointer">😊</button>
+                  <button className="p-1 hover:text-white transition-colors font-bold text-base cursor-pointer">@</button>
+                  <button className="p-1 hover:text-white transition-colors text-base cursor-pointer">📹</button>
+                  <button className="p-1 hover:text-white transition-colors text-base cursor-pointer">🎙</button>
+                  <button className="p-1 hover:text-white transition-colors text-base cursor-pointer">/</button>
+                </div>
+
+                {/* Send Action Trigger */}
+                <div className="flex items-center overflow-hidden rounded-md bg-[#0d9488] text-white">
+                  <button 
+                    onClick={handleSendMessage}
+                    className="px-3 py-1 bg-[#0d9488] hover:bg-[#0f766e] transition-colors cursor-pointer font-bold text-base flex items-center justify-center"
+                  >
+                    ➤
+                  </button>
+                  <span className="w-[1px] h-4 bg-teal-700" />
+                  <button className="px-1.5 py-1 bg-[#0d9488] hover:bg-[#0f766e] transition-colors cursor-pointer text-base flex items-center justify-center">
+                    <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M6 9l6 6 6-6"/></svg>
+                  </button>
+                </div>
+              </div>
+
+            </div>
+          </div>
+
+        </div>
+
+
+
+        {/* Dialog Modal overlay for Member Invitations */}
+        {showInviteModal && (
+          <div className="absolute inset-0 bg-black/70 backdrop-blur-sm z-[250] flex items-center justify-center p-4 animate-fade-in">
+            <div className="bg-[#1b1f24] border border-white/10 rounded-xl max-w-md w-full p-6 text-left shadow-2xl relative">
+              <button 
+                onClick={() => { setShowInviteModal(false); setInviteSuccess(false); }}
+                className="absolute top-4 right-4 text-white/40 hover:text-white transition-colors cursor-pointer text-sm font-bold"
+              >
+                ✕
+              </button>
+
+              <h2 className="text-lg font-bold text-white mb-2">Invite teammates to {wsName}</h2>
+              <p className="text-xs text-white/60 mb-4">Send email invitations to join your workspace channels and collaborate.</p>
+
+              {inviteSuccess ? (
+                <div className="p-3 bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 rounded-lg text-xs font-medium mb-4 flex items-center gap-2">
+                  <span>✓</span> Invitations sent successfully!
+                </div>
+              ) : (
+                <div className="flex flex-col gap-3 mb-4">
+                  <label className="text-xs font-semibold text-white/80">Email addresses</label>
+                  <textarea 
+                    rows="3"
+                    value={inviteEmailInput}
+                    onChange={(e) => setInviteEmailInput(e.target.value)}
+                    placeholder="ex. colleague@company.com, partner@agency.com"
+                    className="w-full bg-white/5 border border-white/10 rounded-lg p-3 text-xs text-white placeholder-white/30 focus:outline-none focus:border-emerald-500 resize-none font-medium"
+                  />
+                </div>
+              )}
+
+              <div className="flex items-center justify-end gap-3">
+                <button 
+                  onClick={() => { setShowInviteModal(false); setInviteSuccess(false); }}
+                  className="px-4 py-2 text-xs font-medium text-white/60 hover:text-white transition-colors cursor-pointer"
+                >
+                  Close
+                </button>
+                {!inviteSuccess && (
+                  <button 
+                    onClick={() => {
+                      if (inviteEmailInput.trim()) {
+                        const newEmails = inviteEmailInput.split(',').map(e => e.trim()).filter(Boolean);
+                        setInvitedList(prev => [...prev, ...newEmails]);
+                        setInviteSuccess(true);
+                        setTimeout(() => {
+                          setShowInviteModal(false);
+                          setInviteSuccess(false);
+                          setInviteEmailInput('');
+                        }, 1500);
+                      }
+                    }}
+                    disabled={!inviteEmailInput.trim()}
+                    className={`px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                      inviteEmailInput.trim() 
+                        ? 'bg-[#0d9488] hover:bg-[#0f766e] text-white shadow-sm' 
+                        : 'bg-white/5 text-white/30 cursor-not-allowed'
+                    }`}
+                  >
+                    Send Invitations
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Channel Details Modal (Triggered by People Icon) */}
+        {showChannelDetails && (
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[200] flex items-center justify-center p-4 animate-fade-in">
+            <div className="bg-[#1a1d21] border border-white/10 rounded-xl w-full max-w-[600px] shadow-2xl overflow-hidden flex flex-col h-[75vh]">
+              
+              {/* Modal Header */}
+              <div className="p-6 pb-0 flex flex-col gap-4 bg-[#1a1d21] shrink-0">
+                <div className="flex items-center justify-between">
+                  <h2 className="text-xl font-extrabold text-white tracking-tight">{activeChannel.startsWith('#') ? activeChannel : `# ${activeChannel}`}</h2>
+                  <button 
+                    onClick={() => setShowChannelDetails(false)}
+                    className="text-white/40 hover:text-white transition-colors cursor-pointer w-8 h-8 flex items-center justify-center rounded-md hover:bg-white/5"
+                  >
+                    <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                  </button>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button className="flex items-center gap-1.5 px-3 py-1.5 bg-[#222529] hover:bg-[#2a2d32] border border-white/10 rounded-md text-white font-medium text-[13px] transition-colors cursor-pointer">
+                    <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg>
+                    <svg className="w-3 h-3 text-white/50" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M6 9l6 6 6-6" /></svg>
+                  </button>
+                  <button className="flex items-center gap-1.5 px-3 py-1.5 bg-[#222529] hover:bg-[#2a2d32] border border-white/10 rounded-md text-white font-medium text-[13px] transition-colors cursor-pointer">
+                    <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path><path d="M13.73 21a2 2 0 0 1-3.46 0"></path></svg>
+                    All new posts
+                    <svg className="w-3 h-3 text-white/50" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M6 9l6 6 6-6" /></svg>
+                  </button>
+                  <button className="flex items-center gap-1.5 px-3 py-1.5 bg-[#222529] hover:bg-[#2a2d32] border border-white/10 rounded-md text-white font-medium text-[13px] transition-colors cursor-pointer">
+                    <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 18v-6a9 9 0 0 1 18 0v6"></path><path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z"></path></svg>
+                    Huddle
+                  </button>
+                </div>
+
+                <div className="flex items-center gap-6 border-b border-white/10 mt-2">
+                  <button className="pb-3 text-[14px] text-white/60 hover:text-white font-medium transition-colors cursor-pointer">About</button>
+                  <button className="pb-3 text-[14px] text-white font-bold border-b-2 border-white cursor-pointer flex items-center gap-1.5">Members <span className="font-normal text-[13px] opacity-70">{1 + invitedList.length}</span></button>
+                  <button className="pb-3 text-[14px] text-white/60 hover:text-white font-medium transition-colors cursor-pointer">Tabs</button>
+                  <button className="pb-3 text-[14px] text-white/60 hover:text-white font-medium transition-colors cursor-pointer">Integrations</button>
+                  <button className="pb-3 text-[14px] text-white/60 hover:text-white font-medium transition-colors cursor-pointer">Settings</button>
+                </div>
+              </div>
+
+              {/* Modal Body - Members List */}
+              <div className="flex-1 overflow-y-auto p-6 bg-[#1a1d21]">
+                <div className="flex gap-3 mb-6">
+                  <div className="relative flex-1">
+                    <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-white/40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+                    <input type="text" placeholder="Find members" className="w-full bg-transparent border border-white/20 rounded-lg pl-9 pr-4 py-2 text-[14px] text-white placeholder-white/40 focus:outline-none focus:border-white/40 transition-colors" />
+                  </div>
+                  <div className="relative border border-white/20 rounded-lg px-4 py-2 text-[14px] text-white cursor-pointer bg-[#1a1d21] min-w-[120px] flex items-center justify-between hover:bg-white/5 transition-colors">
+                    <span>Everyone</span>
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#ffffff" strokeWidth="2"><path d="M6 9l6 6 6-6"/></svg>
+                  </div>
+                </div>
+
+                <div className="flex flex-col gap-1">
+                  <button 
+                    onClick={() => {
+                      setShowChannelDetails(false);
+                      setShowInviteModal(true);
+                    }}
+                    className="flex items-center gap-3 p-2 rounded-lg hover:bg-white/5 transition-colors cursor-pointer text-left w-full"
+                  >
+                    <div className="w-10 h-10 rounded-md bg-[#222529] flex items-center justify-center shrink-0 border border-white/10 text-white/60">
+                      <svg className="w-5 h-5 text-[#0ea5e9]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="8.5" cy="7" r="4"></circle><line x1="20" y1="8" x2="20" y2="14"></line><line x1="23" y1="11" x2="17" y2="11"></line></svg>
+                    </div>
+                    <span className="font-bold text-[15px] text-white">Add people</span>
+                  </button>
+
+                  <div className="flex items-center justify-between p-2 rounded-lg hover:bg-white/5 transition-colors cursor-pointer mt-2">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-md bg-[#d81b60] text-white font-bold text-lg flex items-center justify-center shrink-0 relative">
+                        {ownerName ? ownerName[0].toUpperCase() : 'H'}
+                        <div className="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-[#1a1d21] flex items-center justify-center">
+                          <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 border-2 border-[#1a1d21]" />
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <span className="font-bold text-[15px] text-white">{ownerName}</span>
+                        <span className="text-[13px] text-white/50">(you)</span>
+                        <svg className="w-4 h-4 text-emerald-500 ml-1" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>
+                      </div>
+                    </div>
+                    <span className="px-3 py-1 rounded-full border border-white/10 text-[12px] text-white/60 font-medium">Channel Manager</span>
+                  </div>
+
+                  {invitedList.map((userObj, i) => {
+                    const name = userObj.name || userObj.email.split('@')[0];
+                    return (
+                      <div key={i} className="flex items-center justify-between p-2 rounded-lg hover:bg-white/5 transition-colors cursor-pointer mt-1">
+                        <div className="flex items-center gap-3">
+                          <div className="w-10 h-10 rounded-md bg-[#0ea5e9] text-white font-bold text-lg flex items-center justify-center shrink-0 relative">
+                            {name[0].toUpperCase()}
+                            <div className="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-[#1a1d21] flex items-center justify-center">
+                              <div className="w-2.5 h-2.5 rounded-full border-[1.5px] border-white/50" />
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-1.5">
+                            <span className="font-bold text-[15px] text-white">{name}</span>
+                            <div className="w-1.5 h-1.5 rounded-full border-[1.5px] border-white/30 ml-1" />
+                          </div>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+      </div>
+
+      {/* Right Sidebar for Profile Details */}
+      {showRightSidebar && selectedProfile && (
+        <aside className="w-[320px] bg-[#0b0f12] border-l border-white/5 flex flex-col shrink-0 animate-fade-in text-left shadow-2xl z-20 relative">
+          <div className="h-14 px-5 border-b border-white/5 flex items-center justify-between shrink-0">
+            <h2 className="font-bold text-white tracking-tight">Profile</h2>
+            <button 
+              onClick={() => setShowRightSidebar(false)}
+              className="text-white/40 hover:text-white transition-colors cursor-pointer p-1 rounded hover:bg-white/5"
+            >
+              ✕
+            </button>
+          </div>
+          <div className="p-6 flex flex-col items-center text-center">
+            <div className="w-28 h-28 rounded-3xl bg-gradient-to-br from-indigo-500 to-purple-600 text-white font-extrabold text-5xl flex items-center justify-center mb-5 shadow-lg relative">
+              {selectedProfile.initials}
+              <div className="absolute -bottom-1 -right-1 w-6 h-6 rounded-full bg-emerald-500 border-4 border-[#0b0f12]" />
+            </div>
+            <h3 className="text-xl font-bold text-white tracking-tight">{selectedProfile.name}</h3>
+            <p className="text-[13px] text-emerald-500 font-medium mt-1 mb-6">Online</p>
+            
+            <div className="w-full flex gap-2 justify-center">
+              <button className="flex-1 bg-[#1e2329] hover:bg-[#2a3038] text-white py-2.5 rounded-xl text-sm font-semibold transition-colors shadow-sm cursor-pointer">
+                Message
+              </button>
+              <button className="w-11 flex items-center justify-center bg-[#1e2329] hover:bg-[#2a3038] text-white rounded-xl transition-colors shadow-sm cursor-pointer">
+                <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M5 12h14m-7-7v14"/></svg>
+              </button>
+            </div>
+          </div>
+          <div className="px-6 py-5 border-t border-white/5 flex-1">
+            <h4 className="text-[11px] font-bold text-white/40 uppercase mb-4 tracking-wider">Contact Information</h4>
+            <div className="flex flex-col gap-4">
+              <div className="bg-[#1e2329]/50 p-3 rounded-lg border border-white/5">
+                <div className="flex items-center gap-2 text-white/50 mb-1">
+                  <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"></path><polyline points="22,6 12,13 2,6"></polyline></svg>
+                  <div className="text-[11px] font-semibold">Email Address</div>
+                </div>
+                <div className="text-[13px] text-white/90 font-medium pl-5.5">{selectedProfile.email}</div>
+              </div>
+              <div className="bg-[#1e2329]/50 p-3 rounded-lg border border-white/5">
+                <div className="flex items-center gap-2 text-white/50 mb-1">
+                  <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
+                  <div className="text-[11px] font-semibold">Local Time</div>
+                </div>
+                <div className="text-[13px] text-white/90 font-medium pl-5.5">
+                  {new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
+                </div>
+              </div>
+            </div>
+          </div>
+        </aside>
+      )}
+
+    </div>
+  )
+}
+
+export default Home
