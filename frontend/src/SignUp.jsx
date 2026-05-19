@@ -1,8 +1,10 @@
 import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useGoogleLogin } from '@react-oauth/google'
 import api from './api'
 
-function SignUp({ onBack, onContinue, mode = 'signup' }) {
+function SignUp({ mode = 'signup' }) {
+  const navigate = useNavigate()
   const isSignIn = mode === 'signin'
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
@@ -35,10 +37,14 @@ function SignUp({ onBack, onContinue, mode = 'signup' }) {
           email: userInfo.email,
         })
         
-        const { access_token, name: userName, email: userEmail, tenant_id } = res.data
+        const { access_token, tenant_id } = res.data
         localStorage.setItem('omnibase_token', access_token)
-        if (tenant_id) localStorage.setItem('omnibase_last_tenant', tenant_id.toString())
-        onContinue({ name: userName, email: userEmail })
+        if (tenant_id) {
+          localStorage.setItem('omnibase_last_tenant', tenant_id.toString())
+          navigate('/workspace/' + tenant_id, { replace: true })
+        } else {
+          navigate('/workspaces', { replace: true })
+        }
       } catch (err) {
         setError(err.response?.data?.detail || 'Google sign-in failed. Please try again.')
       } finally {
@@ -62,15 +68,14 @@ function SignUp({ onBack, onContinue, mode = 'signup' }) {
         res = await api.post('/auth/signup', { name, email, password })
       }
       
-      const { access_token, name: userName, email: userEmail, tenant_id } = res.data
+      const { access_token, tenant_id } = res.data
       localStorage.setItem('omnibase_token', access_token)
-      
-      // If we got a tenant_id, save it for the UI (not needed for auth anymore, just UI display)
       if (tenant_id) {
         localStorage.setItem('omnibase_last_tenant', tenant_id.toString())
+        navigate('/workspace/' + tenant_id, { replace: true })
+      } else {
+        navigate('/workspaces', { replace: true })
       }
-      
-      onContinue({ name: userName, email: userEmail })
     } catch (err) {
       setError(err.response?.data?.detail || 'An error occurred. Please try again.')
     } finally {
@@ -88,7 +93,7 @@ function SignUp({ onBack, onContinue, mode = 'signup' }) {
       {/* Auth Content */}
       <div className="relative z-10 flex flex-col items-center gap-6 w-full max-w-[440px]">
         {/* Logo */}
-        <a href="/" className="flex items-center gap-2.5 font-extrabold text-xl tracking-tight text-text-primary hover:opacity-85 transition-opacity" id="auth-logo" onClick={(e) => { e.preventDefault(); onBack() }}>
+        <a href="/" className="flex items-center gap-2.5 font-extrabold text-xl tracking-tight text-text-primary hover:opacity-85 transition-opacity" id="auth-logo" onClick={(e) => { e.preventDefault(); navigate('/') }}>
           <div className="w-8 h-8 rounded-lg bg-linear-to-br from-brand-accent to-brand-accent-2 flex items-center justify-center text-sm shadow-[0_0_20px_var(--color-brand-accent-glow)] text-white" aria-hidden="true">⬡</div>
           OmniBase
         </a>
@@ -199,9 +204,9 @@ function SignUp({ onBack, onContinue, mode = 'signup' }) {
         {/* Footer Toggle Text */}
         <p className="text-[13.5px] text-text-muted text-center" id="auth-footer">
           {isSignIn ? (
-            <>Don't have an account?{' '}<button className="bg-transparent border-none text-brand-accent-2 hover:text-purple-300 font-semibold cursor-pointer transition-colors" id="btn-switch-signup">Create one free</button></>
+            <>Don't have an account?{' '}<button className="bg-transparent border-none text-brand-accent-2 hover:text-purple-300 font-semibold cursor-pointer transition-colors" id="btn-switch-signup" onClick={() => navigate('/signup')}>Create one free</button></>
           ) : (
-            <>Already using OmniBase?{' '}<button className="bg-transparent border-none text-brand-accent-2 hover:text-purple-300 font-semibold cursor-pointer transition-colors" id="btn-switch-signin">Sign in to a workspace</button></>
+            <>Already using OmniBase?{' '}<button className="bg-transparent border-none text-brand-accent-2 hover:text-purple-300 font-semibold cursor-pointer transition-colors" id="btn-switch-signin" onClick={() => navigate('/signin')}>Sign in to a workspace</button></>
           )}
         </p>
 

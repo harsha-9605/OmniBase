@@ -8,4 +8,9 @@ export default defineConfig({
     tailwindcss(),
     react(),
   ],
+  server: {
+    // Redirect all 404s back to index.html so React Router can handle
+    // deep links like /workspace/3 on page refresh.
+    historyApiFallback: true,
+  },
 })

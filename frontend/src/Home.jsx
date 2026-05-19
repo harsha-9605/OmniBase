@@ -1,9 +1,29 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
+import { useParams, useNavigate } from 'react-router-dom'
 import api from './api'
 
-function Home({ tenantId, workspaceName, userProfile, onBack }) {
-  const wsName = workspaceName || 'My Workspace'
-  
+function Home({ userProfile }) {
+  // ── Read tenantId and channel info from the URL ─────────────────────────
+  const { tenantId, projectId, accountId } = useParams()
+  const navigate = useNavigate()
+
+  // ── Workspace name — fetched from API so it survives a page refresh ────
+  const [wsName, setWsName] = useState(() => {
+    return localStorage.getItem(`omnibase_last_tenant_name_${tenantId}`) || 'Workspace'
+  })
+  useEffect(() => {
+    if (!tenantId) return
+    api.get('/tenants/')
+      .then(res => {
+        const ws = res.data.find(w => w.id.toString() === tenantId.toString())
+        if (ws) {
+          setWsName(ws.name)
+          localStorage.setItem(`omnibase_last_tenant_name_${tenantId}`, ws.name)
+        }
+      })
+      .catch(err => console.error('Failed to fetch tenant name', err))
+  }, [tenantId])
+
   // Get initials from wsName
   const wsInitials = wsName
     .split(' ')
@@ -38,19 +58,32 @@ function Home({ tenantId, workspaceName, userProfile, onBack }) {
         ])
         
         if (channelsRes.data && channelsRes.data.length > 0) {
-          const mappedChannels = channelsRes.data.map(p => ({
-            id: p.id.toString(),
-            name: p.name
-          }))
-          setChannels(mappedChannels)
+          // Only show public channels in the Channels sidebar — filter out private DM rooms
+          const publicChannels = channelsRes.data.filter(p => !p.is_private)
+          
+          if (publicChannels.length > 0) {
+            const mappedChannels = publicChannels.map(p => ({
+              id: p.id.toString(),
+              name: p.name
+            }))
 
-          // Auto-connect to the first channel
-          const first = mappedChannels[0]
-          switchChannel(first.id, first.name)
+            // Only replace the local default channels if the backend has more
+            // than the single auto-created channel — keeps the sidebar looking
+            // right on fresh workspaces.
+            if (mappedChannels.length > 1) {
+              setChannels(mappedChannels)
+            }
+
+            // ⚠️  Do NOT auto-switch to the backend channel here.
+            // The default view shows the all-[workspace] welcome panel.
+            // The user explicitly clicks a channel to open it.
+          }
         }
         
         if (usersRes.data) {
-          const others = usersRes.data.filter(u => u.email !== userProfile?.email)
+          // Filter out the current user by account_id (email comparison is unreliable
+          // when userProfile hasn't loaded yet)
+          const others = usersRes.data.filter(u => u.account_id !== userProfile?.id)
           setInvitedList(others)
         }
       } catch (err) {
@@ -59,14 +92,32 @@ function Home({ tenantId, workspaceName, userProfile, onBack }) {
     }
     
     fetchChannelsAndUsers()
-  }, [tenantId])
+  // Re-run when tenantId changes AND when userProfile loads so we can
+  // correctly filter the current user out of the DMs list
+  }, [tenantId, userProfile?.id])
 
   // Direct Messages Invited List State
   const [invitedList, setInvitedList] = useState([])
 
+  // When wsName resolves from the API, update the channels list so the
+  // 'all-[name]' channel reflects the real workspace name, and set the
+  // default active view to that channel.
+  const [channelNamesInitialised, setChannelNamesInitialised] = useState(false)
+  useEffect(() => {
+    if (wsName === 'Workspace' || channelNamesInitialised) return
+    const allName = 'all-' + wsName.toLowerCase().replace(/\s+/g, '-')
+    setChannels(prev => prev.map(c => c.id === 'all' ? { ...c, name: allName } : c))
+    
+    // If the active channel was set to the default before wsName loaded, update its text
+    setActiveChannel(prev => prev === '# all-workspace' ? '# ' + allName : prev)
+    
+    setChannelNamesInitialised(true)
+  }, [wsName, channelNamesInitialised])
+
   // ── Live Chat State ──────────────────────────────────────────────────
   const [channelMessages, setChannelMessages] = useState([])
   const [newMessageText, setNewMessageText] = useState('')
+  // Start with empty; updated once wsName loads from the API (see effect below)
   const [activeChannel, setActiveChannel] = useState('')
   const [activeProjectId, setActiveProjectId] = useState(null)
   const [showWsMenu, setShowWsMenu] = useState(false)
@@ -76,6 +127,30 @@ function Home({ tenantId, workspaceName, userProfile, onBack }) {
   const [inviteSuccess, setInviteSuccess] = useState(false)
   const [showRightSidebar, setShowRightSidebar] = useState(false)
   const [selectedProfile, setSelectedProfile] = useState(null)
+
+  // ── Synchronize View with URL ─────────────────────────────────────────
+  useEffect(() => {
+    // Wait until basic data is loaded to make routing decisions
+    if (!channels.length) return
+
+    if (projectId) {
+      if (activeProjectId === projectId) return // Already on this channel
+      const c = channels.find(x => x.id.toString() === projectId.toString()) || 
+                favourites.find(x => x.id.toString() === projectId.toString())
+      if (c) switchChannel(c.id, c.name)
+    } else if (accountId) {
+      const u = invitedList.find(x => x.account_id.toString() === accountId.toString()) || 
+                (userProfile?.id.toString() === accountId.toString() ? { name: ownerName + ' (you)' } : null)
+      if (u) switchDM(accountId, u.name)
+    } else {
+      // Default: No project or account ID in URL -> navigate to the all-workspace channel
+      // But only if we know the correct dynamic channel ID
+      const allCh = channels.find(c => c.id === 'all' || c.name.startsWith('all-'))
+      if (allCh && wsName !== 'Workspace') {
+        navigate(`/workspace/${tenantId}/c/${allCh.id}`, { replace: true })
+      }
+    }
+  }, [projectId, accountId, channels, invitedList, wsName, tenantId, navigate, activeProjectId, userProfile])
 
   // WebSocket ref — holds the live connection instance
   const wsRef = useRef(null)
@@ -149,6 +224,52 @@ function Home({ tenantId, workspaceName, userProfile, onBack }) {
     }
   }, [])
 
+  // ── Direct Message helper ────────────────────────────────────────────
+  // Calls POST /projects/dm to get/create a private room, then opens it.
+  const switchDM = useCallback(async (targetAccountId, displayLabel) => {
+    try {
+      const res = await api.post('/projects/dm', { target_account_id: targetAccountId })
+      const project = res.data
+      // Reuse switchChannel but pass the human-friendly label as the display name
+      // We override the activeChannel label inside switchChannel by calling setActiveChannel separately
+      if (wsRef.current) {
+        wsRef.current.onclose = null
+        wsRef.current.close()
+        wsRef.current = null
+      }
+
+      setActiveChannel('DM: ' + displayLabel)
+      setActiveProjectId(project.id)
+      setChannelMessages([])
+
+      // Load DM history via REST
+      try {
+        const histRes = await api.get(`/projects/${project.id}/messages`)
+        setChannelMessages(histRes.data.map(formatMsg))
+      } catch (err) {
+        console.error('Failed to load DM history', err)
+      }
+
+      // Open private WebSocket for this DM room
+      const token = localStorage.getItem('omnibase_token')
+      if (!token) return
+
+      const wsUrl = `ws://localhost:8000/ws/${project.id}?token=${token}`
+      const ws = new WebSocket(wsUrl)
+
+      ws.onmessage = (event) => {
+        const msg = JSON.parse(event.data)
+        setChannelMessages(prev => [...prev, formatMsg(msg)])
+      }
+      ws.onerror = (err) => console.error('DM WebSocket error', err)
+      ws.onclose = () => { if (wsRef.current === ws) wsRef.current = null }
+
+      wsRef.current = ws
+    } catch (err) {
+      console.error('Failed to open DM', err)
+    }
+  }, [])
+
   // Send message through the open WebSocket
   const handleSendMessage = () => {
     if (!newMessageText.trim() || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return
@@ -176,7 +297,7 @@ function Home({ tenantId, workspaceName, userProfile, onBack }) {
           </button>
           
           <button 
-            onClick={onBack}
+            onClick={() => navigate('/workspaces')}
             title="Close Dashboard" 
             className="text-white/40 hover:text-white transition-colors cursor-pointer p-1 rounded hover:bg-white/5 font-bold text-xs"
           >
@@ -197,7 +318,7 @@ function Home({ tenantId, workspaceName, userProfile, onBack }) {
               <div className="my-1.5 border-t border-white/5" />
               
               <button 
-                onClick={() => { setShowWsMenu(false); onBack(); }}
+                onClick={() => { setShowWsMenu(false); navigate('/workspaces'); }}
                 className="w-full px-3 py-2 text-left text-xs text-white/70 hover:text-white hover:bg-white/5 transition-colors flex items-center gap-2 cursor-pointer font-medium"
               >
                 <svg className="w-4 h-4 text-white/50" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -266,21 +387,19 @@ function Home({ tenantId, workspaceName, userProfile, onBack }) {
                       </div>
                     </div>
                     
-                    {invitedList.length > 0 && invitedList.map((rawEmail, i) => {
-                      const email = rawEmail.trim();
-                      if (!email) return null;
-                      const name = email.split('@')[0];
+                    {invitedList.length > 0 && invitedList.map((userObj, i) => {
+                      const name = userObj.name || userObj.email.split('@')[0];
                       return (
                         <div 
                           key={i} 
                           onClick={() => {
-                            setActiveChannel(name);
+                            switchDM(userObj.account_id, name)
                             setSelectedProfile({
                               name: name,
                               initials: name[0].toUpperCase(),
-                              email: email
-                            });
-                            setShowRightSidebar(true);
+                              email: userObj.email
+                            })
+                            setShowRightSidebar(true)
                           }}
                           className="p-2 flex items-start gap-3 rounded-lg hover:bg-white/5 cursor-pointer transition-colors border-t border-white/5 mt-1 pt-3"
                         >
@@ -395,7 +514,7 @@ function Home({ tenantId, workspaceName, userProfile, onBack }) {
                     }`}
                   >
                     <button
-                      onClick={() => switchChannel(c.id, c.name)}
+                      onClick={() => navigate(`/workspace/${tenantId}/c/${c.id}`)}
                       className="flex items-center gap-2 flex-1 min-w-0 text-left bg-transparent border-none p-0 cursor-pointer text-inherit font-inherit"
                     >
                       <span className="text-amber-400/80 text-xs shrink-0">★</span>
@@ -441,7 +560,7 @@ function Home({ tenantId, workspaceName, userProfile, onBack }) {
                   }`}
                 >
                   <button 
-                    onClick={() => switchChannel(c.id, c.name)}
+                    onClick={() => navigate(`/workspace/${tenantId}/c/${c.id}`)}
                     className="flex items-center gap-2 flex-1 min-w-0 text-left bg-transparent border-none p-0 cursor-pointer text-inherit font-inherit"
                   >
                     <span className="text-white/30 shrink-0 text-lg font-light leading-none mb-0.5">#</span>
@@ -480,13 +599,15 @@ function Home({ tenantId, workspaceName, userProfile, onBack }) {
             <div className="flex flex-col gap-1 mt-0.5">
               <button 
                 onClick={() => {
-                  setActiveChannel(ownerName + ' (you)');
+                  const myAccountId = userProfile?.id
+                  if (!myAccountId) return
+                  navigate(`/workspace/${tenantId}/dm/${myAccountId}`)
                   setSelectedProfile({
                     name: ownerName,
                     initials: ownerName ? ownerName[0].toUpperCase() : 'H',
                     email: 'You'
-                  });
-                  setShowRightSidebar(true);
+                  })
+                  setShowRightSidebar(true)
                 }}
                 className={`w-full flex items-center gap-3 px-6 py-2 rounded-md text-[14px] transition-colors cursor-pointer text-left font-medium ${
                   activeChannel === ownerName + ' (you)' ? 'bg-[#0d9488]/20 text-[#2dd4bf] font-semibold' : 'text-white/80 hover:text-white hover:bg-white/4'
@@ -506,16 +627,16 @@ function Home({ tenantId, workspaceName, userProfile, onBack }) {
                   <button 
                     key={index}
                     onClick={() => {
-                      setActiveChannel(displayName);
+                      navigate(`/workspace/${tenantId}/dm/${userObj.account_id}`)
                       setSelectedProfile({
                         name: displayName,
                         initials: displayName[0].toUpperCase(),
                         email: userObj.email
-                      });
-                      setShowRightSidebar(true);
+                      })
+                      setShowRightSidebar(true)
                     }}
                     className={`w-full flex items-center gap-3 px-6 py-2 rounded-md text-[14px] transition-colors cursor-pointer text-left font-medium ${
-                      activeChannel === displayName ? 'bg-[#0d9488]/20 text-[#2dd4bf] font-semibold' : 'text-white/70 hover:text-white hover:bg-white/4'
+                      activeChannel === 'DM: ' + displayName ? 'bg-[#0d9488]/20 text-[#2dd4bf] font-semibold' : 'text-white/70 hover:text-white hover:bg-white/4'
                     }`}
                   >
                     <div className="relative w-6 h-6 rounded bg-indigo-500 text-white font-bold text-[11px] flex items-center justify-center shrink-0">
@@ -693,7 +814,8 @@ function Home({ tenantId, workspaceName, userProfile, onBack }) {
                   {activeChannel === '# new-channel' && <>✨ Welcome to #new-channel</>}
                   {activeChannel === '# fun&chat' && <>☕ Have a little chat!</>}
                   {activeChannel === ownerName + ' (you)' && <>📝 This is your space</>}
-                  {!activeChannel.startsWith('#') && activeChannel !== ownerName + ' (you)' && <>💬 Conversation with {activeChannel}</>}
+                  {activeChannel && !activeChannel.startsWith('#') && !activeChannel.startsWith('DM:') && activeChannel !== ownerName + ' (you)' && <>💬 Conversation with {activeChannel}</>}
+                  {activeChannel && activeChannel.startsWith('DM:') && <>💬 Conversation with {activeChannel.replace('DM: ', '')}</>}
                 </h2>
                 <p className="text-[15px] text-white/70 leading-relaxed font-medium">
                   {activeChannel === '# ' + dynamicAllChannelName && (
@@ -708,8 +830,11 @@ function Home({ tenantId, workspaceName, userProfile, onBack }) {
                   {activeChannel === ownerName + ' (you)' && (
                     <>Draft your messages, keep links and files handy 🗂️. And remember, it's perfectly fine to talk to yourself here! 🤖💬</>
                   )}
-                  {!activeChannel.startsWith('#') && activeChannel !== ownerName + ' (you)' && (
+                  {activeChannel && !activeChannel.startsWith('#') && !activeChannel.startsWith('DM:') && activeChannel !== ownerName + ' (you)' && (
                     <>This is the beginning of your direct message history with <strong>{activeChannel}</strong>. Start a private conversation here 🔒.</>
+                  )}
+                  {activeChannel && activeChannel.startsWith('DM:') && (
+                    <>This is the beginning of your direct message history with <strong>{activeChannel.replace('DM: ', '')}</strong>. Start a private conversation here 🔒.</>
                   )}
                 </p>
               </div>

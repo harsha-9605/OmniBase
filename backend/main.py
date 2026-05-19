@@ -13,6 +13,7 @@ from app.models import (
     User, UserCreate,
     Account, AccountCreate,
     Project, ProjectCreate, ProjectRead,
+    ProjectMember,
     Message, MessageRead,
 )
 from app.auth import hash_password, verify_password, create_access_token, decode_access_token
@@ -470,14 +471,157 @@ async def list_projects(
     session: AsyncSession = Depends(get_session),
     membership: User = Depends(get_verified_membership),   # ← Privacy Wall
 ):
-    """List ALL projects that belong to the caller's active tenant.
-
-    Projects from other tenants are invisible — not filtered out, just
-    never fetched. The WHERE clause is the data boundary."""
-    result = await session.execute(
-        select(Project).where(Project.tenant_id == membership.tenant_id)
+    """List projects visible to the caller:
+      - All public channels (is_private=False) belonging to the active tenant.
+      - All private DM rooms (is_private=True) where the caller is a ProjectMember.
+    Private rooms of other users in the same tenant stay invisible."""
+    # 1. Public channels in this tenant
+    public_result = await session.execute(
+        select(Project).where(
+            Project.tenant_id == membership.tenant_id,
+            Project.is_private == False,  # noqa: E712
+        )
     )
-    return list(result.scalars().all())
+    public_projects = list(public_result.scalars().all())
+
+    # 2. Private DM rooms where the caller is an explicit member
+    dm_result = await session.execute(
+        select(Project)
+        .join(ProjectMember, ProjectMember.project_id == Project.id)
+        .where(
+            Project.tenant_id == membership.tenant_id,
+            Project.is_private == True,  # noqa: E712
+            ProjectMember.account_id == membership.account_id,
+        )
+    )
+    dm_projects = list(dm_result.scalars().all())
+
+    return public_projects + dm_projects
+
+
+class DMRequest(BaseModel):
+    """Request body for creating or retrieving a DM conversation."""
+    target_account_id: int  # the account_id of the other user (same as caller for self-DM)
+
+
+@app.post("/projects/dm", response_model=ProjectRead, tags=["Projects"])
+async def get_or_create_dm(
+    body: DMRequest,
+    session: AsyncSession = Depends(get_session),
+    membership: User = Depends(get_verified_membership),
+):
+    """Return (or create) the private DM project between the caller and target.
+
+    Rules:
+      - Self-DM: target_account_id == caller's account_id → one-person private room.
+      - 1:1 DM: finds an existing shared private project; creates one if absent.
+      - The target_account_id must be a member of the same active tenant (Privacy Wall).
+    """
+    caller_id = membership.account_id
+    target_id = body.target_account_id
+
+    # ── Privacy Wall: target must be in the same tenant ───────────────────────
+    if target_id != caller_id:
+        target_check = await session.execute(
+            select(User).where(
+                User.account_id == target_id,
+                User.tenant_id == membership.tenant_id,
+            )
+        )
+        if target_check.scalar_one_or_none() is None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Target user is not a member of your workspace.",
+            )
+
+    # ── Find existing DM project between these two accounts ───────────────────
+    if target_id == caller_id:
+        # Self-DM: a private project where only the caller is a member
+        existing = await session.execute(
+            select(Project)
+            .join(ProjectMember, ProjectMember.project_id == Project.id)
+            .where(
+                Project.tenant_id == membership.tenant_id,
+                Project.type == "dm",
+                Project.is_private == True,  # noqa: E712
+                ProjectMember.account_id == caller_id,
+            )
+        )
+        # Filter to projects with ONLY the caller as member (true self-DM)
+        candidates = existing.scalars().all()
+        existing_project = None
+        for p in candidates:
+            # Verify it's truly a self-DM (only one member: the caller)
+            members_res = await session.execute(
+                select(ProjectMember).where(ProjectMember.project_id == p.id)
+            )
+            members = members_res.scalars().all()
+            account_ids = {m.account_id for m in members}
+            if account_ids == {caller_id}:
+                existing_project = p
+                break
+    else:
+        # 1:1 DM: find a private project where BOTH accounts are members
+        # Sub-query: project IDs where caller is a member
+        caller_pids = select(ProjectMember.project_id).where(
+            ProjectMember.account_id == caller_id
+        ).scalar_subquery()
+        # Sub-query: project IDs where target is a member
+        target_pids = select(ProjectMember.project_id).where(
+            ProjectMember.account_id == target_id
+        ).scalar_subquery()
+
+        existing = await session.execute(
+            select(Project).where(
+                Project.tenant_id == membership.tenant_id,
+                Project.type == "dm",
+                Project.is_private == True,  # noqa: E712
+                Project.id.in_(caller_pids),
+                Project.id.in_(target_pids),
+            )
+        )
+        candidates = existing.scalars().all()
+        existing_project = None
+        for p in candidates:
+            # Confirm exactly two members (no stray group rooms)
+            members_res = await session.execute(
+                select(ProjectMember).where(ProjectMember.project_id == p.id)
+            )
+            members = members_res.scalars().all()
+            account_ids = {m.account_id for m in members}
+            if account_ids == {caller_id, target_id}:
+                existing_project = p
+                break
+
+    if existing_project:
+        return existing_project
+
+    # ── Create new private DM project ─────────────────────────────────────────
+    # Build a deterministic name that doesn't reveal anything to outsiders
+    dm_name = f"dm-{min(caller_id, target_id)}-{max(caller_id, target_id)}"
+    if target_id == caller_id:
+        dm_name = f"dm-self-{caller_id}"
+
+    project = Project(
+        name=dm_name,
+        description="Direct Message",
+        tenant_id=membership.tenant_id,
+        created_by=caller_id,
+        type="dm",
+        is_private=True,
+    )
+    session.add(project)
+    await session.flush()  # get project.id
+
+    # Add caller as a member
+    session.add(ProjectMember(project_id=project.id, account_id=caller_id))
+    # Add target as a member only if it's not a self-DM
+    if target_id != caller_id:
+        session.add(ProjectMember(project_id=project.id, account_id=target_id))
+
+    await session.commit()
+    await session.refresh(project)
+    return project
 
 
 @app.delete("/projects/{project_id}", response_model=dict, tags=["Projects"])
@@ -528,19 +672,38 @@ async def get_message_history(
     membership: User = Depends(get_verified_membership),
 ):
     """Return the last `limit` messages for a channel, newest at the bottom.
-    Privacy wall: the project must belong to the caller's active tenant."""
-    # First verify the project belongs to the caller's tenant
+
+    Privacy wall (layered):
+      1. The project must belong to the caller's active tenant.
+      2. If the project is private (DM), the caller must be a ProjectMember.
+    """
+    # Layer 1: tenant scope
     proj_result = await session.execute(
         select(Project).where(
             Project.id == project_id,
             Project.tenant_id == membership.tenant_id,
         )
     )
-    if proj_result.scalar_one_or_none() is None:
+    project = proj_result.scalar_one_or_none()
+    if project is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Channel not found in your workspace.",
         )
+
+    # Layer 2: private DM access check
+    if project.is_private:
+        pm_result = await session.execute(
+            select(ProjectMember).where(
+                ProjectMember.project_id == project_id,
+                ProjectMember.account_id == membership.account_id,
+            )
+        )
+        if pm_result.scalar_one_or_none() is None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have access to this private conversation.",
+            )
 
     # Fetch last N messages joined with the account name
     result = await session.execute(
@@ -577,10 +740,11 @@ async def websocket_endpoint(
     cannot set custom headers, so query-param auth is the standard pattern).
 
     Lifecycle:
-      1. Verify token → load account → verify membership in target project's tenant
-      2. Register in ConnectionManager room for this project_id
-      3. On message receive → persist to DB → broadcast to all room members
-      4. On disconnect → remove from room cleanly
+      1. Verify token → load account → verify tenant membership
+      2. If project is private (DM), verify explicit ProjectMember access
+      3. Register in ConnectionManager room for this project_id
+      4. On message receive → persist to DB → broadcast to all room members
+      5. On disconnect → remove from room cleanly
     """
     # ── 1. Authenticate & authorise ───────────────────────────────────────────
     try:
@@ -608,16 +772,29 @@ async def websocket_endpoint(
             Project.tenant_id == account.last_active_tenant_id,
         )
     )
-    if proj_result.scalar_one_or_none() is None:
+    project = proj_result.scalar_one_or_none()
+    if project is None:
         await websocket.close(code=4003)
         return
 
-    # ── 2. Accept & register ──────────────────────────────────────────────────
+    # ── 2. Private DM access guard ────────────────────────────────────────────
+    if project.is_private:
+        pm_result = await session.execute(
+            select(ProjectMember).where(
+                ProjectMember.project_id == project_id,
+                ProjectMember.account_id == account_id,
+            )
+        )
+        if pm_result.scalar_one_or_none() is None:
+            await websocket.close(code=4003)  # Forbidden
+            return
+
+    # ── 3. Accept & register ──────────────────────────────────────────────────
     await ws_manager.connect(websocket, project_id)
 
     try:
         while True:
-            # ── 3. Receive, persist, broadcast ───────────────────────────────
+            # ── 4. Receive, persist, broadcast ───────────────────────────────
             data = await websocket.receive_json()
             content = data.get("content", "").strip()
             if not content:
@@ -643,10 +820,11 @@ async def websocket_endpoint(
                 "sender_name": account.name,
             }
 
-            # Fan-out to all viewers in this channel room
+            # Fan-out to all viewers in this channel room (only ProjectMembers can connect,
+            # so the broadcast is already scoped to authorised participants)
             await ws_manager.broadcast(broadcast_payload, project_id)
 
     except WebSocketDisconnect:
-        # ── 4. Clean disconnect ───────────────────────────────────────────────
+        # ── 5. Clean disconnect ───────────────────────────────────────────────
         ws_manager.disconnect(websocket, project_id)
 

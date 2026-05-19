@@ -1,17 +1,12 @@
 import { useState, useEffect } from 'react'
-import Home from './Home'
-
+import { useNavigate } from 'react-router-dom'
 import api from './api'
 
 function Workspace({ userProfile, onBack }) {
+  const navigate = useNavigate()
   const [workspaces, setWorkspaces] = useState([])
   const [showCreateForm, setShowCreateForm] = useState(false)
   const [loading, setLoading] = useState(true)
-  
-  // Active Immersive Dashboard View State
-  const [activeWs, setActiveWs] = useState(() => {
-    return localStorage.getItem('omnibase_last_tenant') || null
-  })
   
   // Wizard States
   const [wizardStep, setWizardStep] = useState(1)
@@ -27,11 +22,9 @@ function Workspace({ userProfile, onBack }) {
         const res = await api.get('/tenants/')
         setWorkspaces(res.data)
         
-        // If there is no active workspace selected, but they have workspaces, select the first one
-        if (!activeWs && res.data.length > 0) {
-          const firstTenant = res.data[0].id.toString();
-          setActiveWs(firstTenant)
-          localStorage.setItem('omnibase_last_tenant', firstTenant)
+        // If there is only one workspace, navigate to it automatically
+        if (res.data.length === 1) {
+          navigate('/workspace/' + res.data[0].id, { replace: true })
         }
       } catch (err) {
         console.error("Failed to fetch workspaces", err)
@@ -76,17 +69,11 @@ function Workspace({ userProfile, onBack }) {
         description: 'General discussions'
       })
 
-      // Update local state
+      // Update local state and navigate to the new workspace
       setWorkspaces([...workspaces, newTenant])
       localStorage.setItem('omnibase_last_tenant', newTenant.id.toString())
-      setActiveWs(newTenant.id.toString())
-
-      // Reset wizard
-      setWorkspaceName('')
-      setUserName('')
-      setTeammateEmails('')
-      setWizardStep(1)
-      setShowCreateForm(false)
+      localStorage.setItem(`omnibase_last_tenant_name_${newTenant.id}`, newTenant.name)
+      navigate('/workspace/' + newTenant.id, { replace: true })
     } catch (err) {
       console.error("Failed to create workspace", err)
     } finally {
@@ -102,17 +89,9 @@ function Workspace({ userProfile, onBack }) {
     'linear-gradient(135deg, #4ade80, #22d3ee)',
   ]
 
-  // Immersive Home Page Dashboard View perfectly matching user screenshots
-  if (activeWs) {
-    const wsData = workspaces.find(w => w.id.toString() === activeWs.toString())
-    return <Home tenantId={activeWs} workspaceName={wsData?.name || 'Workspace'} userProfile={userProfile} onBack={() => {
-      setActiveWs(null);
-      localStorage.removeItem('omnibase_last_tenant');
-    }} />
-  }
-
+  // Wait for fetch
   if (loading) {
-    return <div className="min-h-screen bg-brand-bg text-white flex items-center justify-center">Loading...</div>
+    return <div className="min-h-screen bg-brand-bg text-white flex items-center justify-center">Loading workspaces...</div>
   }
 
   // State 1 & 2: Landing setup framework flow
@@ -194,8 +173,9 @@ function Workspace({ userProfile, onBack }) {
                       <button 
                         key={ws.id} 
                         onClick={() => {
-                          setActiveWs(ws.id.toString());
+                          navigate('/workspace/' + ws.id);
                           localStorage.setItem('omnibase_last_tenant', ws.id.toString());
+                          localStorage.setItem(`omnibase_last_tenant_name_${ws.id}`, ws.name);
                         }}
                         className="w-full flex items-center gap-3.5 p-4 bg-white/4 border border-white/8 rounded-xl cursor-pointer text-left transition-all hover:bg-brand-accent/8 hover:border-brand-accent/30 hover:translate-x-1 group"
                       >
@@ -491,7 +471,7 @@ function Workspace({ userProfile, onBack }) {
                         {userName.trim() ? userName.trim()[0].toUpperCase() : 'H'}
                       </div>
                       <span className="truncate max-w-[85px] text-white font-medium text-[11.5px]">
-                        {userName.trim() || userEmail.split('@')[0] || 'Team Member'}
+                        {userName.trim() || (userProfile?.email || '').split('@')[0] || 'Team Member'}
                       </span>
                       <span className="text-[8.5px] bg-white/15 text-white/70 px-1 rounded shrink-0 font-medium tracking-tighter ml-auto">you</span>
                     </div>
@@ -534,7 +514,7 @@ function Workspace({ userProfile, onBack }) {
                       </div>
                       <div className="flex flex-col min-w-0">
                         <span className="text-[10px] font-extrabold text-gray-800 leading-tight truncate">
-                          {userName.trim() || userEmail.split('@')[0] || 'Team Member'}
+                          {userName.trim() || (userProfile?.email || '').split('@')[0] || 'Team Member'}
                         </span>
                         <span className="text-[11px] text-gray-600 leading-snug mt-0.5">
                           Setting up the workspace flow! ✨

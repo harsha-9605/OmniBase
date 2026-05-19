@@ -1,117 +1,67 @@
-import { useState, useEffect } from 'react'
+import { useEffect, useState } from 'react'
+import { Routes, Route, Navigate, useNavigate } from 'react-router-dom'
 import api from './api'
 import SignUp from './SignUp'
 import Workspace from './Workspace'
+import Home from './Home'
 
-const messages = [
-  {
-    id: 1,
-    avatar: 'ZP',
-    avatarColor: 'bg-brand-accent',
-    name: 'Zara Patel',
-    time: '10:42 AM',
-    text: 'Just merged PR #128 — great work team! 🚀',
-    highlight: '#128',
-    card: {
-      icon: '⑂',
-      iconColor: 'text-brand-accent-2',
-      title: 'feat: add user analytics dashboard',
-      tag: 'Merged',
-      hash: 'a1b2c3d',
-    },
-    reactions: [
-      { emoji: '🚀', count: 12 },
-      { emoji: '👏', count: 6 },
-      { emoji: '😊', count: null },
-    ],
-  },
-  {
-    id: 2,
-    avatar: 'EP',
-    avatarColor: 'bg-brand-teal',
-    name: 'Ethan Park',
-    time: '10:45 AM',
-    text: 'QA looks good. Moving to staging.',
-    reactions: [],
-  },
-  {
-    id: 3,
-    avatar: 'GH',
-    avatarColor: 'bg-[#1a1a2e]',
-    avatarBorder: true,
-    name: 'GitHub',
-    appTag: true,
-    time: '10:45 AM',
-    text: 'Deployment successful ✅',
-    link: 'View deployment',
-    reactions: [],
-  },
-]
+// ─── Auth guard ────────────────────────────────────────────────────────────
+// Redirects to '/' if there is no token in localStorage.
+function RequireAuth({ children }) {
+  const token = localStorage.getItem('omnibase_token')
+  if (!token) return <Navigate to="/" replace />
+  return children
+}
 
-function App() {
-  const [view, setView] = useState(() => {
-    if (localStorage.getItem('omnibase_token')) {
-      return 'workspace'
-    }
-    return 'landing'
-  }) // 'landing' | 'signup' | 'signin' | 'workspace'
+// ─── Shared profile loader ──────────────────────────────────────────────────
+// Fetches /accounts/me once when a token is present and provides the result
+// via a simple hook so child components don't duplicate the request.
+function useUserProfile() {
   const [userProfile, setUserProfile] = useState(null)
+  const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    // Cleanup legacy localStorage items
-    localStorage.removeItem('omnibase_active_ws')
-    localStorage.removeItem('omnibase_workspaces')
-
-    const fetchProfile = async () => {
-      if (localStorage.getItem('omnibase_token')) {
-        try {
-          const res = await api.get('/accounts/me')
-          setUserProfile(res.data)
-        } catch (err) {
-          console.error("Failed to fetch user profile", err)
-        }
-      }
+    const token = localStorage.getItem('omnibase_token')
+    if (!token) {
+      setLoading(false)
+      return
     }
-    fetchProfile()
+    api.get('/accounts/me')
+      .then(res => setUserProfile(res.data))
+      .catch(err => console.error('Failed to fetch profile', err))
+      .finally(() => setLoading(false))
   }, [])
 
-  if (view === 'workspace') {
-    return (
-      <Workspace
-        userProfile={userProfile}
-        onBack={() => {
-          localStorage.removeItem('omnibase_token')
-          localStorage.removeItem('omnibase_last_tenant')
-          setView('landing')
-        }}
-      />
-    )
-  }
+  return { userProfile, loading }
+}
 
-  if (view === 'signup' || view === 'signin') {
-    return (
-      <SignUp
-        mode={view}
-        onBack={() => setView('landing')}
-        onContinue={(profile) => { setUserProfile(profile); setView('workspace') }}
-      />
-    )
-  }
+// ─── Landing page ───────────────────────────────────────────────────────────
+const messages = [
+  {
+    id: 1, avatar: 'ZP', avatarColor: 'bg-brand-accent', name: 'Zara Patel',
+    time: '10:42 AM', text: 'Just merged PR #128 — great work team! 🚀',
+    highlight: '#128',
+    card: { icon: '⑂', iconColor: 'text-brand-accent-2', title: 'feat: add user analytics dashboard', tag: 'Merged', hash: 'a1b2c3d' },
+    reactions: [{ emoji: '🚀', count: 12 }, { emoji: '👏', count: 6 }, { emoji: '😊', count: null }],
+  },
+  { id: 2, avatar: 'EP', avatarColor: 'bg-brand-teal', name: 'Ethan Park', time: '10:45 AM', text: 'QA looks good. Moving to staging.', reactions: [] },
+  { id: 3, avatar: 'GH', avatarColor: 'bg-[#1a1a2e]', avatarBorder: true, name: 'GitHub', appTag: true, time: '10:45 AM', text: 'Deployment successful ✅', link: 'View deployment', reactions: [] },
+]
+
+function LandingPage() {
+  const navigate = useNavigate()
 
   return (
     <div className="relative min-h-screen bg-brand-bg text-text-primary overflow-x-hidden selection:bg-brand-accent/30 selection:text-white">
-      {/* Background Effects */}
       <div className="absolute inset-0 bg-grid-pattern z-0 pointer-events-none opacity-40" />
       <div className="absolute top-[-200px] right-[-80px] w-[600px] h-[600px] rounded-full bg-radial from-brand-accent/20 to-transparent blur-[130px] z-0 pointer-events-none" />
       <div className="absolute bottom-[-100px] left-[-80px] w-[500px] h-[500px] rounded-full bg-radial from-brand-teal/10 to-transparent blur-[130px] z-0 pointer-events-none" />
 
-      {/* Navbar */}
       <nav className="fixed top-0 left-0 right-0 z-50 flex items-center justify-between h-18 px-6 md:px-12 bg-brand-bg/80 backdrop-blur-xl border-b border-white/5" role="navigation" aria-label="Main navigation">
         <a href="/" className="flex items-center gap-2.5 font-extrabold text-xl tracking-tight text-text-primary hover:opacity-90 transition-opacity" id="logo">
           <div className="w-8 h-8 rounded-lg bg-linear-to-br from-brand-accent to-brand-accent-2 flex items-center justify-center text-sm shadow-[0_0_20px_var(--color-brand-accent-glow)] text-white" aria-hidden="true">⬡</div>
           OmniBase
         </a>
-
         <ul className="hidden md:flex items-center gap-1">
           {['Features', 'Pricing', 'Docs', 'Changelog'].map(item => (
             <li key={item}>
@@ -119,35 +69,28 @@ function App() {
             </li>
           ))}
         </ul>
-
         <div className="flex items-center gap-3">
-          <button className="px-4 py-2 text-sm font-medium text-text-secondary hover:text-text-primary hover:bg-white/5 rounded-lg transition-all cursor-pointer" id="btn-signin" onClick={() => setView('signin')}>Sign in</button>
-          <button className="px-4.5 py-2 text-sm font-semibold text-white bg-brand-accent hover:bg-brand-accent/90 rounded-lg shadow-[0_0_20px_var(--color-brand-accent-glow)] hover:shadow-[0_0_32px_var(--color-brand-accent-glow)] hover:-translate-y-0.5 transition-all cursor-pointer" id="btn-get-started" onClick={() => setView('signup')}>Get started free</button>
+          <button className="px-4 py-2 text-sm font-medium text-text-secondary hover:text-text-primary hover:bg-white/5 rounded-lg transition-all cursor-pointer" id="btn-signin" onClick={() => navigate('/signin')}>Sign in</button>
+          <button className="px-4.5 py-2 text-sm font-semibold text-white bg-brand-accent hover:bg-brand-accent/90 rounded-lg shadow-[0_0_20px_var(--color-brand-accent-glow)] hover:shadow-[0_0_32px_var(--color-brand-accent-glow)] hover:-translate-y-0.5 transition-all cursor-pointer" id="btn-get-started" onClick={() => navigate('/signup')}>Get started free</button>
         </div>
       </nav>
 
-      {/* Hero Section */}
       <main className="relative z-10 max-w-7xl mx-auto px-6 md:px-12 pt-32 pb-20 w-full min-h-[calc(100vh-72px)] flex items-center">
         <div className="flex flex-col md:flex-row items-center gap-12 md:gap-16 w-full">
-          
-          {/* Hero Left Content */}
           <div className="flex-1 flex flex-col gap-6 md:gap-8 text-left min-w-0">
             <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-brand-accent-soft border border-brand-accent/30 text-brand-accent-2 text-[12.5px] font-semibold w-fit animate-fade-in-up" id="hero-badge">
               <span className="w-1.5 h-1.5 rounded-full bg-brand-accent-2 shadow-[0_0_8px_var(--color-brand-accent-2)] animate-pulse" aria-hidden="true" />
               Now in public beta
             </div>
-
             <h1 className="text-4xl sm:text-5xl lg:text-6xl font-extrabold tracking-tight leading-[1.09] text-text-primary animate-fade-in-up [animation-delay:100ms]" id="hero-title">
               Where teams,<br />
               tools, and <span className="bg-linear-to-r from-brand-accent via-brand-accent-2 to-brand-teal bg-clip-text text-transparent">AI come<br />together.</span>
             </h1>
-
             <p className="text-base sm:text-lg text-text-secondary leading-relaxed max-w-md animate-fade-in-up [animation-delay:200ms]" id="hero-subtitle">
               OmniBase brings your people, conversations, and tools into one place — so you can work smarter, faster, together.
             </p>
-
             <div className="flex items-center gap-3.5 flex-wrap animate-fade-in-up [animation-delay:320ms]">
-              <button className="px-6 py-3.5 text-sm font-bold text-white bg-gradient-to-r from-brand-accent to-brand-accent-2 hover:to-[#a259ff] rounded-xl shadow-[0_0_32px_var(--color-brand-accent-glow)] hover:shadow-[0_0_48px_var(--color-brand-accent-glow)] hover:-translate-y-0.5 transition-all cursor-pointer" id="btn-cta-main" onClick={() => setView('signup')}>Get started for free</button>
+              <button className="px-6 py-3.5 text-sm font-bold text-white bg-gradient-to-r from-brand-accent to-brand-accent-2 hover:to-[#a259ff] rounded-xl shadow-[0_0_32px_var(--color-brand-accent-glow)] hover:shadow-[0_0_48px_var(--color-brand-accent-glow)] hover:-translate-y-0.5 transition-all cursor-pointer" id="btn-cta-main" onClick={() => navigate('/signup')}>Get started for free</button>
               <button className="flex items-center gap-2 px-5 py-3.5 text-sm font-semibold text-text-secondary hover:text-text-primary border border-white/10 hover:border-white/20 hover:bg-white/4 rounded-xl transition-all cursor-pointer" id="btn-cta-sales">
                 Talk to sales
                 <svg className="w-3.5 h-3.5 transition-transform group-hover:translate-x-1" viewBox="0 0 14 14" fill="none" aria-hidden="true">
@@ -155,7 +98,6 @@ function App() {
                 </svg>
               </button>
             </div>
-
             <div className="flex gap-x-5 gap-y-3.5 flex-wrap animate-fade-in-up [animation-delay:460ms]">
               {[
                 { icon: '💬', bg: 'bg-brand-accent/10', label: 'Team channels' },
@@ -171,55 +113,37 @@ function App() {
             </div>
           </div>
 
-          {/* Hero Right Preview (Slack Mock UI) */}
+          {/* Hero Right — mock UI */}
           <div className="flex-1 w-full max-w-[520px] relative flex justify-center items-center animate-fade-in-up [animation-delay:500ms]" id="mock-ui-container">
             <div className="absolute w-[380px] h-[380px] rounded-full bg-radial from-brand-accent/18 to-transparent pointer-events-none z-0" />
-            
             <div className="relative z-10 w-full bg-[#1a1a1a] rounded-2xl overflow-hidden border border-white/5 shadow-[0_0_0_1px_rgba(0,0,0,0.12),0_32px_80px_rgba(0,0,0,0.55),0_0_80px_rgba(124,92,252,0.15)]" id="mock-ui">
               <div className="flex h-[420px]">
-                
-                {/* Mock Workspace Sidebar */}
                 <div className="w-17 bg-[#3d1a6b] flex flex-col items-center py-3.5 gap-0.5 flex-shrink-0">
                   <div className="w-9 h-9 rounded-xl bg-white text-[#3d1a6b] text-lg font-black flex items-center justify-center mb-2.5">A</div>
                   <div className="w-9 h-[1px] bg-white/15 mb-2" />
-                  {[
-                    { icon: '🏠', label: 'Home' },
-                    { icon: '💬', label: 'DMs' },
-                    { icon: '🔔', label: 'Activity' },
-                    { icon: '···', label: 'More' },
-                  ].map((item) => (
+                  {[{ icon: '🏠', label: 'Home' }, { icon: '💬', label: 'DMs' }, { icon: '🔔', label: 'Activity' }, { icon: '···', label: 'More' }].map((item) => (
                     <div key={item.label} className="flex flex-col items-center gap-0.5 py-2 w-full hover:bg-white/8 cursor-pointer transition-colors">
                       <div className="text-lg text-white/75 w-[30px] h-[30px] flex items-center justify-center">{item.icon}</div>
                       <span className="text-[9px] font-semibold text-white/70 tracking-wider">{item.label}</span>
                     </div>
                   ))}
                 </div>
-
-                {/* Mock Chat Content Panel */}
                 <div className="flex-1 flex flex-col bg-[#1a1a1a] overflow-hidden">
-                  
-                  {/* Channel Header */}
                   <div className="flex items-center justify-between px-4.5 py-3 border-b border-white/8">
                     <div className="flex items-center gap-1.5">
                       <span className="text-sm font-extrabold text-[#f0f0ff] tracking-tight"># project-orion</span>
-                      <svg className="text-white/40" width="12" height="12" viewBox="0 0 12 12" fill="none">
-                        <path d="M2 4l4 4 4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-                      </svg>
+                      <svg className="text-white/40" width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 4l4 4 4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
                     </div>
                     <div className="flex items-center gap-2">
                       <div className="flex -space-x-2">
                         {['ZP','EP','AM'].map((a, i) => (
-                          <div key={i} className="w-5.5 h-5.5 rounded-full bg-gradient-to-br from-brand-accent to-brand-accent-2 border-2 border-[#1a1a1a] text-[7px] font-extrabold text-white flex items-center justify-center">
-                            {a}
-                          </div>
+                          <div key={i} className="w-5.5 h-5.5 rounded-full bg-gradient-to-br from-brand-accent to-brand-accent-2 border-2 border-[#1a1a1a] text-[7px] font-extrabold text-white flex items-center justify-center">{a}</div>
                         ))}
                       </div>
                       <span className="text-[12px] font-bold text-white/50">32</span>
                       <span className="text-sm text-white/35 cursor-pointer hover:text-white/70 ml-1">···</span>
                     </div>
                   </div>
-
-                  {/* Message Stream */}
                   <div className="flex-1 overflow-y-auto py-3.5 flex flex-col gap-0.5">
                     {messages.map(msg => (
                       <div key={msg.id} className="flex items-start gap-2.5 px-4.5 py-2 hover:bg-white/4 transition-colors">
@@ -233,13 +157,9 @@ function App() {
                             <span className="text-[10.5px] text-white/30">{msg.time}</span>
                           </div>
                           <p className="text-xs.5 text-text-secondary leading-relaxed">
-                            {msg.highlight ? (
-                              <>Just merged PR <span className="text-brand-accent-2 font-semibold hover:underline cursor-pointer">{msg.highlight}</span> — great work team! 🚀</>
-                            ) : msg.text}
+                            {msg.highlight ? (<>Just merged PR <span className="text-brand-accent-2 font-semibold hover:underline cursor-pointer">{msg.highlight}</span> — great work team! 🚀</>) : msg.text}
                             {msg.link && <span className="text-brand-accent-2 font-semibold hover:underline cursor-pointer ml-1">{msg.link}</span>}
                           </p>
-
-                          {/* GitHub Integration Card */}
                           {msg.card && (
                             <div className="mt-2.5 p-3 bg-brand-accent/8 border border-brand-accent/25 border-l-3 border-l-brand-accent rounded-lg flex items-start gap-2.5 backdrop-blur-md">
                               <span className="text-xl leading-none text-brand-accent-2">⑂</span>
@@ -252,8 +172,6 @@ function App() {
                               </div>
                             </div>
                           )}
-
-                          {/* Reactions Row */}
                           {msg.reactions.length > 0 && (
                             <div className="flex gap-1.5 mt-2 flex-wrap">
                               {msg.reactions.map((r, i) => (
@@ -267,8 +185,6 @@ function App() {
                       </div>
                     ))}
                   </div>
-
-                  {/* Footer Message Input */}
                   <div className="px-4 py-2.5 border-t border-white/7 bg-[#1a1a1a]">
                     <div className="border border-white/12 bg-white/4 rounded-lg px-3.5 py-2.25 mb-2 flex items-center">
                       <span className="text-xs.5 text-white/25">Message #project-orion</span>
@@ -280,16 +196,13 @@ function App() {
                       <span className="ml-auto text-xs.5 text-white/25 cursor-pointer">➤</span>
                     </div>
                   </div>
-
                 </div>
               </div>
             </div>
           </div>
-
         </div>
       </main>
 
-      {/* Social Trust Banner */}
       <section className="relative z-10 border-t border-white/5 py-13 px-6 md:px-12 w-full max-w-7xl mx-auto text-center" aria-label="Trusted by">
         <p className="text-[11px] font-bold tracking-widest uppercase text-text-muted mb-8">Trusted by forward-thinking teams</p>
         <div className="flex items-center justify-center gap-x-13 gap-y-6 flex-wrap">
@@ -299,6 +212,61 @@ function App() {
         </div>
       </section>
     </div>
+  )
+}
+
+// ─── Root App with Routes ───────────────────────────────────────────────────
+function App() {
+  const { userProfile, loading } = useUserProfile()
+  const token = localStorage.getItem('omnibase_token')
+
+  if (loading) {
+    return <div className="min-h-screen bg-brand-bg text-white flex items-center justify-center">Loading...</div>
+  }
+
+  return (
+    <Routes>
+      {/* Public routes */}
+      <Route path="/" element={
+        // If already signed in, redirect straight to workspace selector
+        token ? <Navigate to="/workspaces" replace /> : <LandingPage />
+      } />
+
+      <Route path="/signup" element={
+        token ? <Navigate to="/workspaces" replace /> : <SignUp mode="signup" />
+      } />
+
+      <Route path="/signin" element={
+        token ? <Navigate to="/workspaces" replace /> : <SignUp mode="signin" />
+      } />
+
+      {/* Protected routes */}
+      <Route path="/workspaces" element={
+        <RequireAuth>
+          <Workspace userProfile={userProfile} />
+        </RequireAuth>
+      } />
+
+      {/* Workspace routes with optional channel/DM paths */}
+      <Route path="/workspace/:tenantId" element={
+        <RequireAuth>
+          <Home userProfile={userProfile} />
+        </RequireAuth>
+      } />
+      <Route path="/workspace/:tenantId/c/:projectId" element={
+        <RequireAuth>
+          <Home userProfile={userProfile} />
+        </RequireAuth>
+      } />
+      <Route path="/workspace/:tenantId/dm/:accountId" element={
+        <RequireAuth>
+          <Home userProfile={userProfile} />
+        </RequireAuth>
+      } />
+
+      {/* Fallback */}
+      <Route path="*" element={<Navigate to="/" replace />} />
+    </Routes>
   )
 }
 
