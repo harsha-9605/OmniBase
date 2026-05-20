@@ -9,6 +9,8 @@ export default defineConfig({
     react(),
   ],
   server: {
+    port: 5174,
+    strictPort: true, // fail instead of switching to a random port
     // Redirect all 404s back to index.html so React Router can handle
     // deep links like /workspace/3 on page refresh.
     historyApiFallback: true,

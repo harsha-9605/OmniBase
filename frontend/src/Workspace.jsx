@@ -1,9 +1,13 @@
 import { useState, useEffect } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useLocation } from 'react-router-dom'
 import api from './api'
 
 function Workspace({ userProfile, onBack }) {
   const navigate = useNavigate()
+  const location = useLocation()
+  const queryParams = new URLSearchParams(location.search)
+  const noRedirect = queryParams.get('noRedirect') === 'true' || location.state?.noRedirect
+
   const [workspaces, setWorkspaces] = useState([])
   const [showCreateForm, setShowCreateForm] = useState(false)
   const [loading, setLoading] = useState(true)
@@ -23,7 +27,7 @@ function Workspace({ userProfile, onBack }) {
         setWorkspaces(res.data)
         
         // If there is only one workspace, navigate to it automatically
-        if (res.data.length === 1) {
+        if (res.data.length === 1 && !noRedirect) {
           navigate('/workspace/' + res.data[0].id, { replace: true })
         }
       } catch (err) {
@@ -33,7 +37,7 @@ function Workspace({ userProfile, onBack }) {
       }
     }
     fetchWorkspaces()
-  }, [])
+  }, [noRedirect])
 
   const getInitials = (name) => {
     return name
@@ -106,7 +110,7 @@ function Workspace({ userProfile, onBack }) {
       <header className="w-full flex items-center justify-between py-5 px-6 sm:px-10 relative z-10 max-w-7xl mx-auto">
         <a 
           href="/" 
-          onClick={(e) => { e.preventDefault(); onBack(); }}
+          onClick={(e) => { e.preventDefault(); navigate('/'); }}
           className="flex items-center gap-2.5 font-extrabold text-xl tracking-tight text-text-primary hover:opacity-80 transition-opacity cursor-pointer"
         >
           <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-brand-accent to-brand-accent-2 flex items-center justify-center text-base shadow-[0_0_18px_var(--color-brand-accent-glow)] text-white">⬡</div>

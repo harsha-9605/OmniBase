@@ -215,6 +215,78 @@ function LandingPage() {
   )
 }
 
+// ─── Global WebSocket Listener ────────────────────────────────────────────────
+function GlobalWebSocketListener({ userProfile }) {
+  const [inviteModal, setInviteModal] = useState(null)
+  const navigate = useNavigate()
+
+  useEffect(() => {
+    const token = localStorage.getItem('omnibase_token')
+    if (!token || !userProfile) return
+
+    const wsUrl = `ws://localhost:8000/ws/0?token=${encodeURIComponent(token)}`
+    const ws = new WebSocket(wsUrl)
+
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data)
+        if (data.type === 'INVITE_RECEIVED') {
+          setInviteModal(data)
+        }
+      } catch (err) {
+        console.error('Failed to parse global websocket message', err)
+      }
+    }
+
+    return () => {
+      ws.close()
+    }
+  }, [userProfile])
+
+  const handleAccept = async () => {
+    try {
+      const res = await api.post('/invite/accept', { workspace_name: inviteModal.workspace_name })
+      const newTenantId = res.data.tenant_id
+      setInviteModal(null)
+      if (newTenantId) {
+        localStorage.setItem('omnibase_last_tenant', newTenantId.toString())
+        // Hard reload or navigate to refresh contexts
+        window.location.assign('/workspace/' + newTenantId)
+      }
+    } catch (err) {
+      console.error('Failed to accept invite', err)
+      alert("Failed to accept invitation.")
+    }
+  }
+
+  if (!inviteModal) return null
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm px-4">
+      <div className="bg-[#1e1e1e] border border-white/10 rounded-xl p-6 shadow-2xl max-w-sm w-full animate-fade-in-up">
+        <h3 className="text-xl font-bold text-white mb-2">Workspace Invitation</h3>
+        <p className="text-text-secondary text-sm mb-6">
+          <span className="font-semibold text-white">{inviteModal.invited_by}</span> has invited you to join the <span className="font-semibold text-white">{inviteModal.workspace_name}</span> workspace.
+        </p>
+        <div className="flex items-center gap-3 justify-end">
+          <button 
+            className="px-4 py-2 text-sm font-medium text-text-secondary hover:text-white hover:bg-white/10 rounded-lg transition-colors cursor-pointer"
+            onClick={() => setInviteModal(null)}
+          >
+            Decline
+          </button>
+          <button 
+            className="px-4 py-2 text-sm font-semibold text-white bg-brand-accent hover:bg-brand-accent/90 rounded-lg shadow-[0_0_15px_var(--color-brand-accent-glow)] transition-all cursor-pointer"
+            onClick={handleAccept}
+          >
+            Accept
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ─── Root App with Routes ───────────────────────────────────────────────────
 function App() {
   const { userProfile, loading } = useUserProfile()
@@ -225,48 +297,57 @@ function App() {
   }
 
   return (
-    <Routes>
-      {/* Public routes */}
-      <Route path="/" element={
-        // If already signed in, redirect straight to workspace selector
-        token ? <Navigate to="/workspaces" replace /> : <LandingPage />
-      } />
+    <>
+      <GlobalWebSocketListener userProfile={userProfile} />
+      <Routes>
+        {/* Public routes */}
+        <Route path="/" element={
+          // If already signed in, redirect straight to workspace selector
+          token ? <Navigate to="/workspaces" replace /> : <LandingPage />
+        } />
 
-      <Route path="/signup" element={
-        token ? <Navigate to="/workspaces" replace /> : <SignUp mode="signup" />
-      } />
+        <Route path="/signup" element={
+          token ? <Navigate to="/workspaces" replace /> : <SignUp mode="signup" />
+        } />
 
-      <Route path="/signin" element={
-        token ? <Navigate to="/workspaces" replace /> : <SignUp mode="signin" />
-      } />
+        <Route path="/signin" element={
+          token ? <Navigate to="/workspaces" replace /> : <SignUp mode="signin" />
+        } />
 
-      {/* Protected routes */}
-      <Route path="/workspaces" element={
-        <RequireAuth>
-          <Workspace userProfile={userProfile} />
-        </RequireAuth>
-      } />
+        {/* Protected routes */}
+        <Route path="/workspaces" element={
+          <RequireAuth>
+            <Workspace 
+              userProfile={userProfile} 
+              onBack={() => {
+                localStorage.removeItem('omnibase_token');
+                window.location.href = '/signin';
+              }} 
+            />
+          </RequireAuth>
+        } />
 
-      {/* Workspace routes with optional channel/DM paths */}
-      <Route path="/workspace/:tenantId" element={
-        <RequireAuth>
-          <Home userProfile={userProfile} />
-        </RequireAuth>
-      } />
-      <Route path="/workspace/:tenantId/c/:projectId" element={
-        <RequireAuth>
-          <Home userProfile={userProfile} />
-        </RequireAuth>
-      } />
-      <Route path="/workspace/:tenantId/dm/:accountId" element={
-        <RequireAuth>
-          <Home userProfile={userProfile} />
-        </RequireAuth>
-      } />
+        {/* Workspace routes with optional channel/DM paths */}
+        <Route path="/workspace/:tenantId" element={
+          <RequireAuth>
+            <Home userProfile={userProfile} />
+          </RequireAuth>
+        } />
+        <Route path="/workspace/:tenantId/c/:projectId" element={
+          <RequireAuth>
+            <Home userProfile={userProfile} />
+          </RequireAuth>
+        } />
+        <Route path="/workspace/:tenantId/dm/:accountId" element={
+          <RequireAuth>
+            <Home userProfile={userProfile} />
+          </RequireAuth>
+        } />
 
-      {/* Fallback */}
-      <Route path="*" element={<Navigate to="/" replace />} />
-    </Routes>
+        {/* Fallback */}
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+    </>
   )
 }
 

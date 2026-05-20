@@ -6,3 +6,6 @@ alembic
 passlib[bcrypt]
 python-jose[cryptography]
 python-multipart
+
+google-auth
+google-api-python-client

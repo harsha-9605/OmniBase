@@ -1,16 +1,19 @@
-import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useState, useEffect } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useGoogleLogin } from '@react-oauth/google'
 import api from './api'
 
 function SignUp({ mode = 'signup' }) {
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   const isSignIn = mode === 'signin'
+  
   const [name, setName] = useState('')
-  const [email, setEmail] = useState('')
+  const [email, setEmail] = useState(searchParams.get('email') || '')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+  const wsParam = searchParams.get('ws')
 
   const [googleLoading, setGoogleLoading] = useState(false)
 
@@ -37,11 +40,24 @@ function SignUp({ mode = 'signup' }) {
           email: userInfo.email,
         })
         
-        const { access_token, tenant_id } = res.data
+        const { access_token, tenant_id: existing_tenant_id } = res.data
         localStorage.setItem('omnibase_token', access_token)
-        if (tenant_id) {
-          localStorage.setItem('omnibase_last_tenant', tenant_id.toString())
-          navigate('/workspace/' + tenant_id, { replace: true })
+        
+        let targetTenantId = existing_tenant_id
+        if (wsParam) {
+          try {
+            const acceptRes = await api.post('/invite/accept', { workspace_name: wsParam }, {
+              headers: { Authorization: `Bearer ${access_token}` }
+            })
+            targetTenantId = acceptRes.data.tenant_id
+          } catch (e) {
+            console.error("Failed to accept invite automatically", e)
+          }
+        }
+        
+        if (targetTenantId) {
+          localStorage.setItem('omnibase_last_tenant', targetTenantId.toString())
+          navigate('/workspace/' + targetTenantId, { replace: true })
         } else {
           navigate('/workspaces', { replace: true })
         }
@@ -68,11 +84,24 @@ function SignUp({ mode = 'signup' }) {
         res = await api.post('/auth/signup', { name, email, password })
       }
       
-      const { access_token, tenant_id } = res.data
+      const { access_token, tenant_id: existing_tenant_id } = res.data
       localStorage.setItem('omnibase_token', access_token)
-      if (tenant_id) {
-        localStorage.setItem('omnibase_last_tenant', tenant_id.toString())
-        navigate('/workspace/' + tenant_id, { replace: true })
+      
+      let targetTenantId = existing_tenant_id
+      if (wsParam) {
+        try {
+          const acceptRes = await api.post('/invite/accept', { workspace_name: wsParam }, {
+            headers: { Authorization: `Bearer ${access_token}` }
+          })
+          targetTenantId = acceptRes.data.tenant_id
+        } catch (e) {
+          console.error("Failed to accept invite automatically", e)
+        }
+      }
+      
+      if (targetTenantId) {
+        localStorage.setItem('omnibase_last_tenant', targetTenantId.toString())
+        navigate('/workspace/' + targetTenantId, { replace: true })
       } else {
         navigate('/workspaces', { replace: true })
       }

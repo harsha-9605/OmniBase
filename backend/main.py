@@ -1,5 +1,5 @@
 from contextlib import asynccontextmanager
-import os, re, urllib.request, json
+import os, re, urllib.request, urllib.parse, json
 from fastapi import FastAPI, Depends, HTTPException, status, WebSocket, WebSocketDisconnect, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
@@ -13,8 +13,10 @@ from app.models import (
     User, UserCreate,
     Account, AccountCreate,
     Project, ProjectCreate, ProjectRead,
-    ProjectMember,
+    ProjectMember, ChannelRole,
     Message, MessageRead,
+    Invitation,
+    UserProjectState, Notification,
 )
 from app.auth import hash_password, verify_password, create_access_token, decode_access_token
 from app.dependencies import get_current_account, get_tenant_context, get_verified_membership
@@ -349,6 +351,190 @@ async def google_auth(
     }
 
 # ─────────────────────────────────────────────────────────────────────────────
+# INVITES AND CONTACTS
+# ─────────────────────────────────────────────────────────────────────────────
+
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+
+class InviteRequest(BaseModel):
+    emails: list[str]
+    workspace_name: str
+    base_url: str = "http://localhost:5174"
+
+@app.post("/api/invite", tags=["Invites"])
+async def send_invites(
+    body: InviteRequest,
+    session: AsyncSession = Depends(get_session),
+    membership: User = Depends(get_verified_membership),
+    current_account: Account = Depends(get_current_account),
+):
+    gmail_user = os.getenv("GMAIL_ADDRESS")
+    gmail_password = os.getenv("GMAIL_APP_PASSWORD")
+    mail_server = os.getenv("MAIL_SERVER", "smtp.gmail.com")
+    mail_port = int(os.getenv("MAIL_PORT", 587))
+
+    if not gmail_user or not gmail_password:
+        raise HTTPException(status_code=500, detail="Email configuration missing in .env")
+
+    success_count = 0
+    errors = []
+
+    for recipient in body.emails:
+        try:
+            # 1. Save invitation to database
+            inv_result = await session.execute(
+                select(Invitation).where(
+                    Invitation.email == recipient, 
+                    Invitation.tenant_id == membership.tenant_id
+                )
+            )
+            existing_invitation = inv_result.scalars().first()
+            if not existing_invitation:
+                invitation = Invitation(
+                    email=recipient,
+                    tenant_id=membership.tenant_id,
+                    invited_by=membership.account_id
+                )
+                session.add(invitation)
+                await session.commit()
+            
+            # 2. Send WebSocket notification if user is online
+            acc_result = await session.execute(select(Account).where(Account.email == recipient))
+            invited_account = acc_result.scalars().first()
+            if invited_account:
+                await ws_manager.personal_broadcast({
+                    "type": "INVITE_RECEIVED",
+                    "workspace_name": body.workspace_name,
+                    "invited_by": current_account.name
+                }, invited_account.id)
+
+            # 3. Send Email
+            msg = MIMEMultipart()
+            msg['From'] = gmail_user
+            msg['To'] = recipient
+            msg['Subject'] = f"OmniBase: You've been invited to join the {body.workspace_name} workspace"
+
+            safe_ws = urllib.parse.quote(body.workspace_name)
+            safe_email = urllib.parse.quote(recipient)
+            invite_url = f"{body.base_url}/signup?ws={safe_ws}&email={safe_email}"
+
+            html = f"""
+            <html>
+              <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+                <h2 style="color: #2dd4bf;">Welcome to OmniBase</h2>
+                <p>Hello,</p>
+                <p>An engineer has invited you to collaborate on the <strong>{body.workspace_name}</strong> workspace inside OmniBase—a high-performance, real-time developer collaboration cluster.</p>
+                <p>By joining this workspace, you will gain instant access to live team channels, automated project resource boards, and integrated AI assistant utilities built directly into your communication streams.</p>
+                <div style="margin: 30px 0;">
+                  <a href="{invite_url}" style="background-color: #3b82f6; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold;">Accept Invitation & Join Team</a>
+                </div>
+                <hr style="border: none; border-top: 1px solid #eee; margin: 30px 0;" />
+                <p style="font-size: 12px; color: #999;">Security Note: This invitation token expires in 48 hours.</p>
+              </body>
+            </html>
+            """
+            
+            msg.attach(MIMEText(html, 'html'))
+
+            server = smtplib.SMTP(mail_server, mail_port)
+            server.starttls()
+            server.login(gmail_user, gmail_password)
+            server.send_message(msg)
+            server.quit()
+            success_count += 1
+        except Exception as e:
+            errors.append(f"Failed for {recipient}: {str(e)}")
+
+    if errors:
+        if success_count == 0:
+            raise HTTPException(status_code=500, detail="Failed to send any emails: " + ", ".join(errors))
+        return {"message": f"Sent {success_count} invites, but {len(errors)} failed.", "errors": errors}
+
+    return {"message": f"Successfully sent {success_count} invites"}
+
+class AcceptInviteRequest(BaseModel):
+    workspace_name: str
+
+@app.post("/api/invite/accept", tags=["Invites"])
+async def accept_invite(
+    body: AcceptInviteRequest,
+    session: AsyncSession = Depends(get_session),
+    current_account: Account = Depends(get_current_account),
+):
+    # Find tenant by name
+    t_result = await session.execute(select(Tenant).where(Tenant.name == body.workspace_name))
+    tenant = t_result.scalars().first()
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+
+    # Check if user is already a member
+    u_result = await session.execute(
+        select(User).where(User.account_id == current_account.id, User.tenant_id == tenant.id)
+    )
+    user = u_result.scalars().first()
+    
+    if not user:
+        # Create user role
+        user = User(
+            account_id=current_account.id,
+            tenant_id=tenant.id,
+            role=UserRole.user
+        )
+        session.add(user)
+        await session.commit()
+    
+    # Mark invitation as accepted if it exists
+    inv_result = await session.execute(
+        select(Invitation).where(
+            Invitation.email == current_account.email, 
+            Invitation.tenant_id == tenant.id,
+            Invitation.status == "pending"
+        )
+    )
+    invitation = inv_result.scalars().first()
+    if invitation:
+        invitation.status = "accepted"
+        session.add(invitation)
+        await session.commit()
+        
+    return {"message": "Successfully joined workspace", "tenant_id": tenant.id}
+
+
+class GoogleContactsRequest(BaseModel):
+    access_token: str
+
+@app.post("/api/auth/google-contacts", tags=["Auth"])
+async def fetch_google_contacts(
+    body: GoogleContactsRequest,
+):
+    try:
+        req = urllib.request.Request(
+            "https://people.googleapis.com/v1/people/me/connections?personFields=names,emailAddresses",
+            headers={"Authorization": f"Bearer {body.access_token}"}
+        )
+        with urllib.request.urlopen(req) as response:
+            data = json.loads(response.read().decode())
+            
+        contacts = []
+        for person in data.get("connections", []):
+            names = person.get("names", [])
+            emails = person.get("emailAddresses", [])
+            if emails:
+                name = names[0].get("displayName") if names else emails[0].get("value")
+                email = emails[0].get("value")
+                contacts.append({"name": name, "email": email})
+                
+        return {"contacts": contacts}
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Failed to fetch Google contacts: {str(e)}",
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # TENANTS — Protected by auth + tenant context
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -459,10 +645,22 @@ async def create_project(
         description=project_in.description,
         tenant_id=membership.tenant_id,       # locked to active tenant
         created_by=membership.account_id,     # locked to this account
+        is_private=project_in.is_private,
     )
     session.add(project)
     await session.commit()
     await session.refresh(project)
+
+    if project.is_private:
+        # Creator is the Admin of the private channel
+        member = ProjectMember(
+            project_id=project.id,
+            account_id=membership.account_id,
+            role=ChannelRole.admin
+        )
+        session.add(member)
+        await session.commit()
+
     return project
 
 
@@ -497,6 +695,157 @@ async def list_projects(
     dm_projects = list(dm_result.scalars().all())
 
     return public_projects + dm_projects
+
+@app.get("/projects/{project_id}/members", tags=["Projects"])
+async def get_project_members(
+    project_id: int,
+    session: AsyncSession = Depends(get_session),
+    membership: User = Depends(get_verified_membership),
+):
+    p_result = await session.execute(select(Project).where(Project.id == project_id, Project.tenant_id == membership.tenant_id))
+    project = p_result.scalars().first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+        
+    m_result = await session.execute(
+        select(ProjectMember, Account)
+        .join(Account, Account.id == ProjectMember.account_id)
+        .where(ProjectMember.project_id == project_id)
+    )
+    members = []
+    for pm, acc in m_result.all():
+        members.append({
+            "account_id": acc.id,
+            "name": acc.name,
+            "email": acc.email,
+            "role": pm.role.value
+        })
+    return members
+
+class AddProjectMemberRequest(BaseModel):
+    account_id: int
+
+@app.post("/projects/{project_id}/members", tags=["Projects"])
+async def add_project_member(
+    project_id: int,
+    body: AddProjectMemberRequest,
+    session: AsyncSession = Depends(get_session),
+    membership: User = Depends(get_verified_membership),
+):
+    p_result = await session.execute(select(Project).where(Project.id == project_id, Project.tenant_id == membership.tenant_id))
+    project = p_result.scalars().first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    caller_pm_result = await session.execute(select(ProjectMember).where(ProjectMember.project_id == project_id, ProjectMember.account_id == membership.account_id))
+    caller_pm = caller_pm_result.scalars().first()
+    
+    if not caller_pm or caller_pm.role == ChannelRole.member:
+        raise HTTPException(status_code=403, detail="Only Admins and Elders can add members")
+
+    new_member = ProjectMember(
+        project_id=project_id,
+        account_id=body.account_id,
+        role=ChannelRole.member
+    )
+    session.add(new_member)
+    try:
+        await session.commit()
+    except Exception:
+        await session.rollback()
+        raise HTTPException(status_code=400, detail="User is already in the channel")
+        
+    return {"message": "Member added successfully"}
+
+class UpdateRoleRequest(BaseModel):
+    role: ChannelRole
+
+@app.patch("/projects/{project_id}/members/{account_id}/role", tags=["Projects"])
+async def update_project_member_role(
+    project_id: int,
+    account_id: int,
+    body: UpdateRoleRequest,
+    session: AsyncSession = Depends(get_session),
+    membership: User = Depends(get_verified_membership),
+):
+    caller_pm_result = await session.execute(select(ProjectMember).where(ProjectMember.project_id == project_id, ProjectMember.account_id == membership.account_id))
+    caller_pm = caller_pm_result.scalars().first()
+    if not caller_pm:
+        raise HTTPException(status_code=403, detail="Not a member of this project")
+
+    target_pm_result = await session.execute(select(ProjectMember).where(ProjectMember.project_id == project_id, ProjectMember.account_id == account_id))
+    target_pm = target_pm_result.scalars().first()
+    if not target_pm:
+        raise HTTPException(status_code=404, detail="Member not found in this project")
+
+    if caller_pm.role == ChannelRole.member:
+        raise HTTPException(status_code=403, detail="Members cannot change roles")
+
+    if body.role == ChannelRole.admin and caller_pm.role != ChannelRole.admin:
+        raise HTTPException(status_code=403, detail="Only an Admin can promote to Admin")
+
+    if target_pm.role == ChannelRole.admin and caller_pm.role != ChannelRole.admin:
+        raise HTTPException(status_code=403, detail="Only an Admin can demote an Admin")
+        
+    if account_id == membership.account_id and body.role != ChannelRole.admin:
+        admin_count_result = await session.execute(select(ProjectMember).where(ProjectMember.project_id == project_id, ProjectMember.role == ChannelRole.admin))
+        admin_count = len(admin_count_result.scalars().all())
+        if admin_count <= 1:
+            raise HTTPException(status_code=400, detail="Cannot demote yourself. You are the only Admin.")
+
+    target_pm.role = body.role
+    session.add(target_pm)
+    
+    # Send a notification for role change
+    notif = Notification(
+        user_id=account_id,
+        actor_id=membership.account_id,
+        type="role_escalation",
+        project_id=project_id,
+        content_preview=f"Your role in the channel was updated to {body.role.value}"
+    )
+    session.add(notif)
+    
+    await session.commit()
+    
+    # Broadcast notification personally
+    await ws_manager.personal_broadcast({
+        "type": "NOTIFICATION",
+        "notification": {
+            "id": notif.id,
+            "type": notif.type,
+            "content_preview": notif.content_preview,
+            "project_id": notif.project_id
+        }
+    }, account_id)
+    
+    return {"message": "Role updated successfully"}
+
+@app.delete("/projects/{project_id}/members/{account_id}", tags=["Projects"])
+async def remove_project_member(
+    project_id: int,
+    account_id: int,
+    session: AsyncSession = Depends(get_session),
+    membership: User = Depends(get_verified_membership),
+):
+    caller_pm_result = await session.execute(select(ProjectMember).where(ProjectMember.project_id == project_id, ProjectMember.account_id == membership.account_id))
+    caller_pm = caller_pm_result.scalars().first()
+    
+    if not caller_pm or caller_pm.role != ChannelRole.admin:
+        raise HTTPException(status_code=403, detail="Only Admins can kick members")
+
+    if account_id == membership.account_id:
+        raise HTTPException(status_code=400, detail="Cannot kick yourself. Use leave channel instead or demote.")
+
+    target_pm_result = await session.execute(select(ProjectMember).where(ProjectMember.project_id == project_id, ProjectMember.account_id == account_id))
+    target_pm = target_pm_result.scalars().first()
+    
+    if not target_pm:
+        raise HTTPException(status_code=404, detail="Member not found")
+
+    await session.delete(target_pm)
+    await session.commit()
+    return {"message": "Member removed successfully"}
 
 
 class DMRequest(BaseModel):
@@ -727,6 +1076,145 @@ async def get_message_history(
     return messages
 
 
+@app.post("/projects/{project_id}/read", tags=["Messages"])
+async def mark_channel_read(
+    project_id: int,
+    session: AsyncSession = Depends(get_session),
+    membership: User = Depends(get_verified_membership),
+):
+    """Mark all messages in the channel as read by the current user."""
+    # Find the latest message in this channel
+    latest_msg_result = await session.execute(
+        select(Message.id).where(Message.project_id == project_id).order_by(Message.id.desc()).limit(1)
+    )
+    latest_msg_id = latest_msg_result.scalar_one_or_none()
+    if not latest_msg_id:
+        return {"message": "No messages to read"}
+
+    # Update or create UserProjectState
+    state_result = await session.execute(
+        select(UserProjectState).where(
+            UserProjectState.project_id == project_id,
+            UserProjectState.account_id == membership.account_id
+        )
+    )
+    state = state_result.scalar_one_or_none()
+    
+    if state:
+        state.last_read_message_id = latest_msg_id
+    else:
+        state = UserProjectState(
+            account_id=membership.account_id,
+            project_id=project_id,
+            last_read_message_id=latest_msg_id
+        )
+        session.add(state)
+        
+    await session.commit()
+    return {"message": "Read receipt updated"}
+
+
+@app.get("/projects/unread-states", tags=["Projects"])
+async def get_unread_states(
+    session: AsyncSession = Depends(get_session),
+    membership: User = Depends(get_verified_membership),
+):
+    """Returns a map of {project_id: unread_count} for the active tenant."""
+    # Get all projects the user has access to in this tenant
+    # (Simplified for now: we just count messages > last_read_message_id for all projects)
+    # We will do this via a few queries
+    
+    # 1. Get user's read states
+    states_result = await session.execute(
+        select(UserProjectState).where(UserProjectState.account_id == membership.account_id)
+    )
+    states = {s.project_id: s.last_read_message_id for s in states_result.scalars().all()}
+    
+    # 2. Get the latest message ID for all projects in this tenant
+    # To keep it simple, we iterate over projects the user can see (from list_projects logic)
+    
+    public_result = await session.execute(
+        select(Project.id).where(
+            Project.tenant_id == membership.tenant_id,
+            Project.is_private == False,
+        )
+    )
+    public_pids = list(public_result.scalars().all())
+
+    dm_result = await session.execute(
+        select(Project.id)
+        .join(ProjectMember, ProjectMember.project_id == Project.id)
+        .where(
+            Project.tenant_id == membership.tenant_id,
+            Project.is_private == True,
+            ProjectMember.account_id == membership.account_id,
+        )
+    )
+    dm_pids = list(dm_result.scalars().all())
+    
+    all_pids = public_pids + dm_pids
+    if not all_pids:
+        return {}
+        
+    # Find latest message for each project, and total count for each project
+    from sqlalchemy import func
+    counts_result = await session.execute(
+        select(Message.project_id, func.count(Message.id), func.max(Message.id))
+        .where(Message.project_id.in_(all_pids))
+        .group_by(Message.project_id)
+    )
+    
+    unread_map = {}
+    for pid, total_msgs, max_id in counts_result.all():
+        last_read = states.get(pid, 0) or 0
+        if last_read < max_id:
+            # For exact count, we should count messages > last_read
+            unread_msgs_result = await session.execute(
+                select(func.count(Message.id))
+                .where(Message.project_id == pid, Message.id > last_read)
+            )
+            unread_map[pid] = unread_msgs_result.scalar_one_or_none() or 0
+        else:
+            unread_map[pid] = 0
+            
+    return unread_map
+
+
+@app.get("/notifications", tags=["Notifications"])
+async def get_notifications(
+    session: AsyncSession = Depends(get_session),
+    current_account: Account = Depends(get_current_account),
+):
+    result = await session.execute(
+        select(Notification)
+        .where(Notification.user_id == current_account.id)
+        .order_by(Notification.created_at.desc())
+        .limit(50)
+    )
+    return result.scalars().all()
+
+
+@app.post("/notifications/{notification_id}/read", tags=["Notifications"])
+async def mark_notification_read(
+    notification_id: int,
+    session: AsyncSession = Depends(get_session),
+    current_account: Account = Depends(get_current_account),
+):
+    result = await session.execute(
+        select(Notification).where(
+            Notification.id == notification_id,
+            Notification.user_id == current_account.id
+        )
+    )
+    notif = result.scalar_one_or_none()
+    if not notif:
+        raise HTTPException(status_code=404, detail="Notification not found")
+        
+    notif.is_read = True
+    await session.commit()
+    return {"message": "Notification marked read"}
+
+
 @app.websocket("/ws/{project_id}")
 async def websocket_endpoint(
     websocket: WebSocket,
@@ -766,6 +1254,16 @@ async def websocket_endpoint(
         await websocket.close(code=4003)
         return
 
+    # Special bypass for global connection (project_id=0) to receive personal events (e.g. invites)
+    if project_id == 0:
+        await ws_manager.connect(websocket, project_id, account_id)
+        try:
+            while True:
+                await websocket.receive_text() # just keep-alive
+        except WebSocketDisconnect:
+            ws_manager.disconnect(websocket, project_id, account_id)
+        return
+
     proj_result = await session.execute(
         select(Project).where(
             Project.id == project_id,
@@ -790,7 +1288,7 @@ async def websocket_endpoint(
             return
 
     # ── 3. Accept & register ──────────────────────────────────────────────────
-    await ws_manager.connect(websocket, project_id)
+    await ws_manager.connect(websocket, project_id, account_id)
 
     try:
         while True:
@@ -820,11 +1318,50 @@ async def websocket_endpoint(
                 "sender_name": account.name,
             }
 
+            # Check for mentions
+            import re
+            mentioned_names = re.findall(r"@([a-zA-Z0-9_]+)", content)
+            if mentioned_names:
+                # Find users by name in this tenant
+                mentioned_accs_result = await session.execute(
+                    select(Account)
+                    .join(User, User.account_id == Account.id)
+                    .where(
+                        User.tenant_id == account.last_active_tenant_id,
+                        Account.name.in_(mentioned_names)
+                    )
+                )
+                mentioned_accs = mentioned_accs_result.scalars().all()
+                for acc in mentioned_accs:
+                    if acc.id != account.id:
+                        notif = Notification(
+                            user_id=acc.id,
+                            actor_id=account.id,
+                            type="mention",
+                            project_id=project_id,
+                            message_id=msg.id,
+                            content_preview=f"{account.name} mentioned you: '{content[:50]}...'" if len(content) > 50 else f"{account.name} mentioned you: '{content}'"
+                        )
+                        session.add(notif)
+                        await session.commit()
+                        await session.refresh(notif)
+                        
+                        # Broadcast notification personally
+                        await ws_manager.personal_broadcast({
+                            "type": "NOTIFICATION",
+                            "notification": {
+                                "id": notif.id,
+                                "type": notif.type,
+                                "content_preview": notif.content_preview,
+                                "project_id": notif.project_id
+                            }
+                        }, acc.id)
+
             # Fan-out to all viewers in this channel room (only ProjectMembers can connect,
             # so the broadcast is already scoped to authorised participants)
             await ws_manager.broadcast(broadcast_payload, project_id)
 
     except WebSocketDisconnect:
         # ── 5. Clean disconnect ───────────────────────────────────────────────
-        ws_manager.disconnect(websocket, project_id)
+        ws_manager.disconnect(websocket, project_id, account_id)
 

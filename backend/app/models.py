@@ -9,6 +9,11 @@ class UserRole(str, Enum):
     manager = "Manager"
     user = "User"
 
+class ChannelRole(str, Enum):
+    admin = "Admin"
+    elder = "Elder"
+    member = "Member"
+
 class AccountBase(SQLModel):
     name: str = Field(index=True)
     email: str = Field(unique=True, index=True)
@@ -70,7 +75,7 @@ class Project(ProjectBase, table=True):
     is_private: bool = Field(default=False)
 
 class ProjectCreate(ProjectBase):
-    pass   # tenant_id and created_by are injected by the route, not the caller
+    is_private: bool = False
 
 class ProjectRead(ProjectBase):
     id: int
@@ -96,6 +101,18 @@ class ProjectMember(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     project_id: int = Field(foreign_key="project.id", index=True)
     account_id: int = Field(foreign_key="account.id", index=True)
+    role: ChannelRole = Field(default=ChannelRole.member)
+
+
+# ── Invitation ────────────────────────────────────────────────────────────────
+
+class Invitation(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    email: str = Field(index=True)
+    tenant_id: int = Field(foreign_key="tenant.id", index=True)
+    invited_by: int = Field(foreign_key="account.id")
+    status: str = Field(default="pending") # "pending", "accepted"
+    created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
 # ── Message ───────────────────────────────────────────────────────────────────
@@ -118,3 +135,24 @@ class MessageRead(SQLModel):
     project_id: int
     account_id: int
     sender_name: str
+
+# ── UserProjectState — Tracks read receipts per user per channel ─────────────
+
+class UserProjectState(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    account_id: int = Field(foreign_key="account.id", index=True)
+    project_id: int = Field(foreign_key="project.id", index=True)
+    last_read_message_id: Optional[int] = Field(default=None, foreign_key="message.id")
+
+# ── Notification — Polymorphic activity feed ──────────────────────────────────
+
+class Notification(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: int = Field(foreign_key="account.id", index=True) # Who gets it
+    actor_id: Optional[int] = Field(default=None, foreign_key="account.id") # Who did it
+    type: str = Field(index=True) # "mention", "workspace_invite", "role_escalation"
+    project_id: Optional[int] = Field(default=None, foreign_key="project.id")
+    message_id: Optional[int] = Field(default=None, foreign_key="message.id")
+    content_preview: str
+    is_read: bool = Field(default=False)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
