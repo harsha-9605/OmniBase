@@ -5,6 +5,12 @@ import SignUp from './SignUp'
 import Workspace from './Workspace'
 import Home from './Home'
 
+// Derive WebSocket base URL from the HTTP API base:
+// https://omnibase-backend.onrender.com  →  wss://omnibase-backend.onrender.com
+// http://localhost:8000                  →  ws://localhost:8000
+const _apiBase = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+const WS_BASE = _apiBase.replace(/^https:/, 'wss:').replace(/^http:/, 'ws:')
+
 // ─── Auth guard ────────────────────────────────────────────────────────────
 // Redirects to '/' if there is no token in localStorage.
 function RequireAuth({ children }) {
@@ -224,7 +230,7 @@ function GlobalWebSocketListener({ userProfile }) {
     const token = localStorage.getItem('omnibase_token')
     if (!token || !userProfile) return
 
-    const wsUrl = `ws://localhost:8000/ws/0?token=${encodeURIComponent(token)}`
+    const wsUrl = `${WS_BASE}/ws/0?token=${encodeURIComponent(token)}`
     const ws = new WebSocket(wsUrl)
 
     ws.onmessage = (event) => {

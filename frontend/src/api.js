@@ -1,7 +1,11 @@
 import axios from 'axios';
 
+// Reads VITE_API_URL from .env → https://omnibase-backend.onrender.com in production
+// Falls back to http://localhost:8000 for local development
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+
 const api = axios.create({
-  baseURL: 'http://localhost:8000',
+  baseURL: API_BASE,
 });
 
 // Request interceptor to dynamically attach the token

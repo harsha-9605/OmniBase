@@ -3,6 +3,12 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { useGoogleLogin } from '@react-oauth/google'
 import api from './api'
 
+// Derive WebSocket base URL from the HTTP API base:
+// https://omnibase-backend.onrender.com  →  wss://omnibase-backend.onrender.com
+// http://localhost:8000                  →  ws://localhost:8000
+const _apiBase = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+const WS_BASE = _apiBase.replace(/^https:/, 'wss:').replace(/^http:/, 'ws:')
+
 // Components
 import Sidebar from './components/sidebar/Sidebar'
 import Header from './components/layout/Header'
@@ -156,7 +162,7 @@ function Home({ userProfile }) {
     }
     const token = localStorage.getItem('omnibase_token')
     if (!token) return
-    const ws = new WebSocket(`ws://localhost:8000/ws/${pid}?token=${token}`)
+    const ws = new WebSocket(`${WS_BASE}/ws/${pid}?token=${token}`)
     ws.onmessage = (event) => {
       const msg = JSON.parse(event.data)
       if (msg.type === "MESSAGE_EDITED") {
@@ -205,7 +211,7 @@ function Home({ userProfile }) {
       }
       const token = localStorage.getItem('omnibase_token')
       if (!token) return
-      const ws = new WebSocket(`ws://localhost:8000/ws/${project.id}?token=${token}`)
+      const ws = new WebSocket(`${WS_BASE}/ws/${project.id}?token=${token}`)
       ws.onmessage = (event) => {
         const msg = JSON.parse(event.data)
         if (msg.type === "MESSAGE_EDITED") {
