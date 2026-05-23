@@ -807,244 +807,287 @@ export default function ChatArea({
       </div>
 
       {/* Scrollable message area */}
-      <div className="flex-1 overflow-y-auto p-6 flex flex-col justify-between">
+      <div className="flex-1 overflow-y-auto flex flex-col" style={{minHeight:0}}>
 
         {/* Welcome block */}
-        <div className="mb-8 animate-fade-in-up">
-          <div className="max-w-3xl text-left bg-[#181d22]/50 border border-white/5 rounded-xl p-8 hover:bg-[#1a2027]/70 transition-colors">
-            <h2 className="text-3xl font-extrabold text-white mb-4 tracking-tight flex items-center gap-3">
-              {(activeChannel === '# ' + dynamicAllChannelName || activeChannel === '# general') && <>👋 Welcome to {activeChannel}</>}
-              {activeChannel === '# new-channel' && <>✨ Welcome to #new-channel</>}
-              {activeChannel === '# fun&chat' && <>☕ Have a little chat!</>}
-              {activeChannel === ownerName + ' (you)' && <>📝 This is your space</>}
-              {activeChannel && !activeChannel.startsWith('#') && !activeChannel.startsWith('DM:') && activeChannel !== ownerName + ' (you)' && <>💬 Conversation with {activeChannel}</>}
-              {activeChannel && activeChannel.startsWith('DM:') && <>💬 Conversation with {activeChannel.replace('DM: ', '')}</>}
-            </h2>
-            <p className="text-[15px] text-white/70 leading-relaxed font-medium">
-              {(activeChannel === '# ' + dynamicAllChannelName || activeChannel === '# general') && (
-                <><strong>Everyone is here!</strong> Share announcements, updates about project news 📰, company news 🏢, or events 🎉 with your teammates.</>
-              )}
-              {activeChannel === '# new-channel' && (
-                <>This channel is focused around a specific topic 🎯. You can keep all project-related information here so everyone can access it easily 📁.</>
-              )}
-              {activeChannel === '# fun&chat' && (
-                <>Other channels are for work, but this is for relaxation 🌴. Take a break, share a joke 😂, and casually chat with the team.</>
-              )}
-              {activeChannel === ownerName + ' (you)' && (
-                <>Draft your messages, keep links and files handy 🗂️. And remember, it's perfectly fine to talk to yourself here! 🤖💬</>
-              )}
-              {activeChannel && !activeChannel.startsWith('#') && !activeChannel.startsWith('DM:') && activeChannel !== ownerName + ' (you)' && (
-                <>This is the beginning of your direct message history with <strong>{activeChannel}</strong>. Start a private conversation here 🔒.</>
-              )}
-              {activeChannel && activeChannel.startsWith('DM:') && (
-                <>This is the beginning of your direct message history with <strong>{activeChannel.replace('DM: ', '')}</strong>. Start a private conversation here 🔒.</>
-              )}
-            </p>
-
-            {/* fun&chat introductory onboarding cards */}
-            {activeChannel === '# fun&chat' && (
-              <div className="flex gap-5 mt-8 flex-wrap">
-                {/* Card 1: Send a GIF */}
-                <div 
-                  onClick={() => {
-                    setShowGifPicker(true);
-                    setShowEmojiPicker(false);
-                  }}
-                  className="w-[200px] h-[250px] rounded-xl border border-[#c2410c]/30 p-4 flex flex-col justify-between cursor-pointer transition-all hover:scale-[1.03] hover:border-white/20 select-none overflow-hidden hover:shadow-[0_12px_30px_rgba(124,45,18,0.3)] shadow-lg"
-                  style={{ background: 'linear-gradient(135deg, #7c2d12, #3c1206)' }}
-                >
-                  <div className="text-[16px] font-extrabold text-white tracking-tight">Send a GIF</div>
-                  
-                  {/* Mock Giphy UI inside the card */}
-                  <div className="bg-[#131619] border border-white/5 rounded-lg p-2.5 flex flex-col gap-2 shadow-2xl w-[172px] scale-95 origin-bottom translate-y-1">
-                    {/* Tabs */}
-                    <div className="flex border-b border-white/5 text-[9px] pb-1 font-semibold text-white/35 justify-between">
-                      <span className="opacity-70">😊 Emoji</span>
-                      <span className="text-white border-b border-indigo-400 relative font-extrabold">
-                        🖼️ GIFs
-                        {/* Faux click cursor hand pointer */}
-                        <div className="absolute right-[-4px] bottom-[-10px] z-10 pointer-events-none scale-75">
-                          👉
-                        </div>
-                      </span>
+        <div className="px-8 pt-8 pb-6 animate-fade-in-up select-none">
+          {activeChannel && activeChannel.startsWith('#') ? (
+            // Workspace Channels welcome block
+            <div className="flex flex-col gap-3">
+              {/* Large hero heading like Slack */}
+              <div className="mb-1">
+                {/* fun&chat visual banner — shows pictures at the top so people know what the channel is for */}
+                {activeChannel === '# fun&chat' && (
+                  <div className="flex items-center gap-3 mb-5 p-4 rounded-2xl border border-[#f97316]/20 overflow-hidden relative"
+                    style={{ background: 'linear-gradient(135deg, rgba(124,45,18,0.25), rgba(154,52,18,0.12))' }}>
+                    {/* Decorative large emojis */}
+                    <div className="flex gap-2 flex-wrap">
+                      {['🎉','😂','🌴','🎮','🍕','🎬','🎵','🏆','🤣','🎨','🐶','🌊','🎭','🍿','✨'].map((em, i) => (
+                        <span key={i} className="text-2xl select-none" style={{ animationDelay: `${i*0.05}s` }}>{em}</span>
+                      ))}
                     </div>
-                    
-                    {/* Faux Search Bar */}
-                    <div className="bg-white/5 border border-white/8 rounded px-2 py-1 text-[8px] text-white/30 flex items-center gap-1">
-                      <span>🔍</span> Search GIPHY
-                    </div>
-                    
-                    {/* Faux Grid Items */}
-                    <div className="grid grid-cols-3 gap-1 h-12 overflow-hidden">
-                      <div className="bg-blue-400/15 border border-blue-400/20 rounded flex items-center justify-center text-[10px]">✨</div>
-                      <div className="bg-emerald-400/15 border border-emerald-400/20 rounded flex items-center justify-center text-[10px]">🔥</div>
-                      <div className="bg-purple-400/15 border border-purple-400/20 rounded flex items-center justify-center text-[10px]">🎉</div>
-                    </div>
+                    <div className="absolute right-4 top-1/2 -translate-y-1/2 text-[10px] font-bold text-[#f97316]/60 uppercase tracking-widest">Fun &amp; Vibes Only</div>
                   </div>
-                </div>
-
-                {/* Card 2: Invite teammates */}
-                <div 
-                  onClick={() => setShowInviteModal(true)}
-                  className="w-[200px] h-[250px] rounded-xl border border-[#6b21a8]/35 p-4 flex flex-col justify-between cursor-pointer transition-all hover:scale-[1.03] hover:border-white/20 select-none overflow-hidden hover:shadow-[0_12px_30px_rgba(88,28,135,0.3)] shadow-lg"
-                  style={{ background: 'linear-gradient(135deg, #3b0764, #120024)' }}
-                >
-                  <div className="text-[16px] font-extrabold text-white tracking-tight">Invite teammates</div>
-                  
-                  {/* Overlapping Avatars Mockup inside the card */}
-                  <div className="flex items-center justify-center h-28 relative mt-1 w-full scale-105">
-                    {/* Avatar 1 (Green bg) */}
-                    <div className="absolute left-[16px] top-[14px] w-14 h-14 rounded-full bg-[#10b981] flex items-center justify-center text-white border-2 border-[#1e053a] shadow-md z-10">
-                      <svg className="w-10 h-10" viewBox="0 0 100 100" fill="none">
-                        <circle cx="50" cy="50" r="40" fill="#fbcfe8" />
-                        <circle cx="38" cy="45" r="3" fill="#334155" />
-                        <circle cx="62" cy="45" r="3" fill="#334155" />
-                        <path d="M42 60 Q50 66 58 60" stroke="#334155" strokeWidth="4" strokeLinecap="round" fill="none" />
-                        <path d="M20 30 Q30 20 40 25 T60 20 T80 30" stroke="#78350f" strokeWidth="12" strokeLinecap="round" fill="none" />
-                      </svg>
-                    </div>
-
-                    {/* Avatar 2 (Blue bg) */}
-                    <div className="absolute right-[16px] top-[14px] w-14 h-14 rounded-full bg-[#3b82f6] flex items-center justify-center text-white border-2 border-[#1e053a] shadow-md z-10">
-                      <svg className="w-10 h-10" viewBox="0 0 100 100" fill="none">
-                        <circle cx="50" cy="50" r="40" fill="#fed7aa" />
-                        <rect x="28" y="38" width="16" height="12" rx="3" stroke="#334155" strokeWidth="3" fill="none" />
-                        <rect x="56" y="38" width="16" height="12" rx="3" stroke="#334155" strokeWidth="3" fill="none" />
-                        <line x1="44" y1="44" x2="56" y2="44" stroke="#334155" strokeWidth="3" />
-                        <path d="M42 60 Q50 66 58 60" stroke="#334155" strokeWidth="4" strokeLinecap="round" fill="none" />
-                        <path d="M25 35 Q50 15 75 35" stroke="#1e293b" strokeWidth="10" fill="none" />
-                      </svg>
-                    </div>
-
-                    {/* Avatar 3 (Orange bg) */}
-                    <div className="absolute bottom-[2px] w-14 h-14 rounded-full bg-[#fb923c] flex items-center justify-center text-white border-2 border-[#1e053a] shadow-lg z-20">
-                      <svg className="w-10 h-10" viewBox="0 0 100 100" fill="none">
-                        <circle cx="50" cy="50" r="40" fill="#fcd34d" />
-                        <circle cx="38" cy="45" r="3" fill="#334155" />
-                        <circle cx="62" cy="45" r="3" fill="#334155" />
-                        <path d="M42 60 Q50 66 58 60" stroke="#334155" strokeWidth="4" strokeLinecap="round" fill="none" />
-                        <path d="M22 40 C22 20, 78 20, 78 40" stroke="#ec4899" strokeWidth="10" fill="none" />
-                      </svg>
-                    </div>
-                  </div>
-                </div>
+                )}
+                <h2 className="text-4xl font-black text-white tracking-tight leading-tight">
+                  {activeChannel === '# ' + dynamicAllChannelName || activeChannel === '# general' ? (
+                    <>Everyone's all here in <span className="text-[#2dd4bf]">{activeChannel}</span> 🌟</>
+                  ) : activeChannel === '# fun&chat' ? (
+                    <>Welcome to <span className="text-[#f97316]">{activeChannel}</span> 🌴</>
+                  ) : (
+                    <>Welcome to <span className="text-[#2dd4bf]">{activeChannel}</span> ✨</>
+                  )}
+                </h2>
+                <p className="text-[15.5px] text-white/60 leading-relaxed font-medium mt-3 max-w-2xl">
+                  {activeChannel === '# ' + dynamicAllChannelName || activeChannel === '# general' ? (
+                    <>Share announcements and updates about company news, upcoming events, or teammates who deserve some kudos. ⭐️</>
+                  ) : activeChannel === '# new-channel' ? (
+                    <>This channel is focused around a specific topic 🎯. Keep all project-related information here so everyone can access it easily 📁.</>
+                  ) : activeChannel === '# fun&chat' ? (
+                    <>Other channels are for work, but this one is for relaxation 🌴. Take a break, share a joke 😂, and casually chat with the team.</>
+                  ) : (
+                    <>This is the very beginning of the <strong className="text-white/80">{activeChannel}</strong> channel. Use it to collaborate and share updates! 🚀</>
+                  )}
+                </p>
               </div>
-            )}
 
-            {/* Standard channel introductory onboarding cards */}
-            {activeChannel && activeChannel.startsWith('#') && activeChannel !== '# fun&chat' && (
-              <div className="flex gap-5 mt-8 flex-wrap animate-fade-in-up">
-                {/* Card 1: Invite teammates */}
-                <div 
-                  onClick={() => setShowInviteModal(true)}
-                  className="w-[200px] h-[250px] rounded-xl border border-[#6b21a8]/35 p-4 flex flex-col justify-between cursor-pointer transition-all hover:scale-[1.03] hover:border-white/20 select-none overflow-hidden hover:shadow-[0_12px_30px_rgba(88,28,135,0.3)] shadow-lg"
-                  style={{ background: 'linear-gradient(135deg, #3b0764, #120024)' }}
-                >
-                  <div className="text-[15px] font-extrabold text-white tracking-tight leading-tight">Invite teammates</div>
-                  
-                  {/* Overlapping Avatars Mockup inside the card */}
-                  <div className="flex items-center justify-center h-28 relative mt-1 w-full scale-105">
-                    {/* Avatar 1 (Green bg) */}
-                    <div className="absolute left-[16px] top-[14px] w-14 h-14 rounded-full bg-[#10b981] flex items-center justify-center text-white border-2 border-[#1e053a] shadow-md z-10">
-                      <svg className="w-10 h-10" viewBox="0 0 100 100" fill="none">
-                        <circle cx="50" cy="50" r="40" fill="#fbcfe8" />
-                        <circle cx="38" cy="45" r="3" fill="#334155" />
-                        <circle cx="62" cy="45" r="3" fill="#334155" />
-                        <path d="M42 60 Q50 66 58 60" stroke="#334155" strokeWidth="4" strokeLinecap="round" fill="none" />
-                        <path d="M20 30 Q30 20 40 25 T60 20 T80 30" stroke="#78350f" strokeWidth="12" strokeLinecap="round" fill="none" />
-                      </svg>
-                    </div>
+              {/* Divider */}
+              <div className="h-px bg-white/5 my-2" />
 
-                    {/* Avatar 2 (Blue bg) */}
-                    <div className="absolute right-[16px] top-[14px] w-14 h-14 rounded-full bg-[#3b82f6] flex items-center justify-center text-white border-2 border-[#1e053a] shadow-md z-10">
-                      <svg className="w-10 h-10" viewBox="0 0 100 100" fill="none">
-                        <circle cx="50" cy="50" r="40" fill="#fed7aa" />
-                        <rect x="28" y="38" width="16" height="12" rx="3" stroke="#334155" strokeWidth="3" fill="none" />
-                        <rect x="56" y="38" width="16" height="12" rx="3" stroke="#334155" strokeWidth="3" fill="none" />
-                        <line x1="44" y1="44" x2="56" y2="44" stroke="#334155" strokeWidth="3" />
-                        <path d="M42 60 Q50 66 58 60" stroke="#334155" strokeWidth="4" strokeLinecap="round" fill="none" />
-                        <path d="M25 35 Q50 15 75 35" stroke="#1e293b" strokeWidth="10" fill="none" />
-                      </svg>
-                    </div>
-
-                    {/* Avatar 3 (Orange bg) */}
-                    <div className="absolute bottom-[2px] w-14 h-14 rounded-full bg-[#fb923c] flex items-center justify-center text-white border-2 border-[#1e053a] shadow-lg z-20">
-                      <svg className="w-10 h-10" viewBox="0 0 100 100" fill="none">
-                        <circle cx="50" cy="50" r="40" fill="#fcd34d" />
-                        <circle cx="38" cy="45" r="3" fill="#334155" />
-                        <circle cx="62" cy="45" r="3" fill="#334155" />
-                        <path d="M42 60 Q50 66 58 60" stroke="#334155" strokeWidth="4" strokeLinecap="round" fill="none" />
-                        <path d="M22 40 C22 20, 78 20, 78 40" stroke="#ec4899" strokeWidth="10" fill="none" />
-                      </svg>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Card 2: Connect your apps */}
-                <div 
-                  onClick={() => alert("App integrations can be managed via the workspace settings panel.")}
-                  className="w-[200px] h-[250px] rounded-xl border border-[#0284c7]/35 p-4 flex flex-col justify-between cursor-pointer transition-all hover:scale-[1.03] hover:border-white/20 select-none overflow-hidden hover:shadow-[0_12px_30px_rgba(2,132,199,0.3)] shadow-lg"
-                  style={{ background: 'linear-gradient(135deg, #0c4a6e, #031e2e)' }}
-                >
-                  <div className="flex flex-col text-left">
-                    <div className="text-[15px] font-extrabold text-white tracking-tight leading-tight">Connect your apps</div>
-                    <div className="text-[10.5px] text-white/50 font-semibold mt-0.5 leading-snug">Bring your work into Slack</div>
-                  </div>
-                  
-                  {/* Mock Integrations UI inside the card */}
-                  <div className="bg-[#131619] border border-white/5 rounded-lg p-2 flex flex-col gap-1.5 shadow-2xl w-[172px] scale-95 origin-bottom translate-y-1">
-                    <div className="flex items-center gap-1 border-b border-white/5 pb-1 w-full justify-between">
-                      <div className="flex gap-0.5">
-                        <div className="w-1 h-1 rounded-full bg-red-500" />
-                        <div className="w-1 h-1 rounded-full bg-yellow-500" />
-                        <div className="w-1 h-1 rounded-full bg-green-500" />
+              {/* Cards layout — horizontally filling, Slack-like */}
+              <div className="flex gap-4 flex-wrap">
+                {activeChannel === '# fun&chat' ? (
+                  <>
+                    {/* fun&chat introductory onboarding cards */}
+                    {/* Card 1: Send a GIF */}
+                    <div 
+                      onClick={() => {
+                        setShowGifPicker(true);
+                        setShowEmojiPicker(false);
+                      }}
+                      className="flex-1 min-w-[200px] max-w-[300px] h-[260px] rounded-2xl border border-[#c2410c]/30 p-5 flex flex-col justify-between cursor-pointer transition-all hover:scale-[1.02] hover:border-white/20 overflow-hidden hover:shadow-[0_16px_36px_rgba(124,45,18,0.4)] shadow-xl"
+                      style={{ background: 'linear-gradient(135deg, #7c2d12, #3c1206)' }}
+                    >
+                      <div className="flex flex-col text-left">
+                        <div className="text-[16px] font-extrabold text-white tracking-tight leading-tight">Send a GIF</div>
+                        <div className="text-[11.5px] text-white/55 font-semibold mt-1 leading-snug">Express yourself in chat</div>
                       </div>
-                      <span className="text-[7px] text-white/25 select-none font-bold uppercase tracking-wider">Apps</span>
+                      
+                      {/* Mock Giphy UI inside the card */}
+                      <div className="bg-[#131619] border border-white/5 rounded-t-xl p-3 flex flex-col gap-2 w-full mt-4 translate-y-3 shrink-0 shadow-2xl">
+                        {/* Tabs */}
+                        <div className="flex border-b border-white/5 text-[10px] pb-1 font-semibold text-white/35 justify-between">
+                          <span className="opacity-70">😊 Emoji</span>
+                          <span className="text-white border-b border-indigo-400 relative font-extrabold">
+                            🖼️ GIFs
+                            <div className="absolute right-[-4px] bottom-[-10px] z-10 scale-75">
+                              👉
+                            </div>
+                          </span>
+                        </div>
+                        
+                        {/* Faux Search Bar */}
+                        <div className="bg-white/5 border border-white/8 rounded px-2 py-1.5 text-[9px] text-white/30 flex items-center gap-1">
+                          <span>🔍</span> Search GIPHY
+                        </div>
+                        
+                        {/* Faux Grid Items */}
+                        <div className="grid grid-cols-3 gap-1 h-14 overflow-hidden">
+                          <div className="bg-blue-400/15 border border-blue-400/20 rounded flex items-center justify-center text-[11px]">✨</div>
+                          <div className="bg-emerald-400/15 border border-emerald-400/20 rounded flex items-center justify-center text-[11px]">🔥</div>
+                          <div className="bg-purple-400/15 border border-purple-400/20 rounded flex items-center justify-center text-[11px]">🎉</div>
+                        </div>
+                      </div>
                     </div>
-                    <div className="flex gap-2 justify-center py-1.5">
-                      <div className="w-7 h-7 rounded bg-blue-500/10 border border-blue-500/30 flex items-center justify-center text-xs shadow-sm hover:bg-blue-500/20 transition-colors">☁️</div>
-                      <div className="w-7 h-7 rounded bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-xs shadow-sm hover:bg-emerald-500/20 transition-colors">📊</div>
-                      <div className="w-7 h-7 rounded bg-purple-500/10 border border-purple-500/30 flex items-center justify-center text-xs shadow-sm hover:bg-purple-500/20 transition-colors">🔐</div>
-                      <div className="w-7 h-7 rounded bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-xs shadow-sm hover:bg-amber-500/20 transition-colors">🛠️</div>
-                    </div>
-                  </div>
-                </div>
 
-                {/* Card 3: Personalize welcome */}
-                <div 
-                  onClick={() => startRecording()}
-                  className="w-[200px] h-[250px] rounded-xl border border-[#059669]/35 p-4 flex flex-col justify-between cursor-pointer transition-all hover:scale-[1.03] hover:border-white/20 select-none overflow-hidden hover:shadow-[0_12px_30px_rgba(5,150,105,0.3)] shadow-lg"
-                  style={{ background: 'linear-gradient(135deg, #064e3b, #022c22)' }}
-                >
-                  <div className="flex flex-col text-left">
-                    <div className="text-[15px] font-extrabold text-white tracking-tight leading-tight">Personalize welcome</div>
-                    <div className="text-[10.5px] text-white/50 font-semibold mt-0.5 leading-snug">Give your audio welcome</div>
-                  </div>
-                  
-                  {/* Waveform Mockup inside the card */}
-                  <div className="bg-[#131619] border border-white/5 rounded-lg p-2.5 flex flex-col gap-2 shadow-2xl w-[172px] scale-95 origin-bottom translate-y-1">
-                    <div className="flex items-center justify-center gap-1.5 h-10 py-1">
-                      <div className="w-0.5 h-3 bg-emerald-400 rounded opacity-60" />
-                      <div className="w-0.5 h-5 bg-emerald-400 rounded opacity-80" />
-                      <div className="w-0.5 h-8 bg-emerald-400 rounded animate-pulse" />
-                      <div className="w-0.5 h-4 bg-emerald-400 rounded opacity-70" />
-                      <div className="w-0.5 h-7 bg-emerald-400 rounded animate-pulse" />
-                      <div className="w-0.5 h-5 bg-emerald-400 rounded opacity-80" />
-                      <div className="w-0.5 h-2 bg-emerald-400 rounded opacity-60" />
+                    {/* Card 2: Invite teammates */}
+                    <div 
+                      onClick={() => setShowInviteModal(true)}
+                      className="flex-1 min-w-[200px] max-w-[300px] h-[260px] rounded-2xl border border-[#6b21a8]/35 p-5 flex flex-col justify-between cursor-pointer transition-all hover:scale-[1.02] hover:border-white/20 overflow-hidden hover:shadow-[0_16px_36px_rgba(88,28,135,0.4)] shadow-xl"
+                      style={{ background: 'linear-gradient(135deg, #3b0764, #120024)' }}
+                    >
+                      <div className="flex flex-col text-left">
+                        <div className="text-[16px] font-extrabold text-white tracking-tight leading-tight">Invite teammates</div>
+                        <div className="text-[11.5px] text-white/55 font-semibold mt-1 leading-snug">Add your whole team</div>
+                      </div>
+                      
+                      {/* Overlapping Avatars Mockup inside the card */}
+                      <div className="flex items-center justify-center h-32 relative mt-4 w-full translate-y-2">
+                        {/* Avatar 1 (Green bg) */}
+                        <div className="absolute left-[20px] top-[14px] w-16 h-16 rounded-full bg-[#10b981] flex items-center justify-center text-white border-2 border-[#1e053a] shadow-md z-10">
+                          <svg className="w-12 h-12" viewBox="0 0 100 100" fill="none">
+                            <circle cx="50" cy="50" r="40" fill="#fbcfe8" />
+                            <circle cx="38" cy="45" r="3" fill="#334155" />
+                            <circle cx="62" cy="45" r="3" fill="#334155" />
+                            <path d="M42 60 Q50 66 58 60" stroke="#334155" strokeWidth="4" strokeLinecap="round" fill="none" />
+                            <path d="M20 30 Q30 20 40 25 T60 20 T80 30" stroke="#78350f" strokeWidth="12" strokeLinecap="round" fill="none" />
+                          </svg>
+                        </div>
+
+                        {/* Avatar 2 (Blue bg) */}
+                        <div className="absolute right-[20px] top-[14px] w-16 h-16 rounded-full bg-[#3b82f6] flex items-center justify-center text-white border-2 border-[#1e053a] shadow-md z-10">
+                          <svg className="w-12 h-12" viewBox="0 0 100 100" fill="none">
+                            <circle cx="50" cy="50" r="40" fill="#fed7aa" />
+                            <rect x="28" y="38" width="16" height="12" rx="3" stroke="#334155" strokeWidth="3" fill="none" />
+                            <rect x="56" y="38" width="16" height="12" rx="3" stroke="#334155" strokeWidth="3" fill="none" />
+                            <line x1="44" y1="44" x2="56" y2="44" stroke="#334155" strokeWidth="3" />
+                            <path d="M42 60 Q50 66 58 60" stroke="#334155" strokeWidth="4" strokeLinecap="round" fill="none" />
+                            <path d="M25 35 Q50 15 75 35" stroke="#1e293b" strokeWidth="10" fill="none" />
+                          </svg>
+                        </div>
+
+                        {/* Avatar 3 (Orange bg) */}
+                        <div className="absolute bottom-[5px] w-16 h-16 rounded-full bg-[#fb923c] flex items-center justify-center text-white border-2 border-[#1e053a] shadow-lg z-20">
+                          <svg className="w-12 h-12" viewBox="0 0 100 100" fill="none">
+                            <circle cx="50" cy="50" r="40" fill="#fcd34d" />
+                            <circle cx="38" cy="45" r="3" fill="#334155" />
+                            <circle cx="62" cy="45" r="3" fill="#334155" />
+                            <path d="M42 60 Q50 66 58 60" stroke="#334155" strokeWidth="4" strokeLinecap="round" fill="none" />
+                            <path d="M22 40 C22 20, 78 20, 78 40" stroke="#ec4899" strokeWidth="10" fill="none" />
+                          </svg>
+                        </div>
+                      </div>
                     </div>
-                    <div className="flex items-center justify-between border-t border-white/5 pt-1.5 w-full text-[7px] text-white/40 font-bold uppercase tracking-wider">
-                      <span className="flex items-center gap-1 text-[#f43f5e]"><span className="w-1.5 h-1.5 rounded-full bg-[#f43f5e] animate-ping" /> REC</span>
-                      <span>0:03</span>
+                  </>
+                ) : (
+                  <>
+                    {/* Standard Channels Cards */}
+                    {/* Card 1: Invite teammates */}
+                    <div 
+                      onClick={() => setShowInviteModal(true)}
+                      className="flex-1 min-w-[200px] max-w-[300px] h-[260px] rounded-2xl border border-[#6b21a8]/35 p-5 flex flex-col justify-between cursor-pointer transition-all hover:scale-[1.02] hover:border-white/20 overflow-hidden hover:shadow-[0_16px_36px_rgba(88,28,135,0.4)] shadow-xl"
+                      style={{ background: 'linear-gradient(135deg, #3b0764, #120024)' }}
+                    >
+                      <div className="flex flex-col text-left">
+                        <div className="text-[16px] font-extrabold text-white tracking-tight leading-tight">Invite teammates</div>
+                        <div className="text-[11.5px] text-white/55 font-semibold mt-1 leading-snug">Add your whole team</div>
+                      </div>
+                      
+                      {/* Overlapping Avatars Mockup inside the card */}
+                      <div className="flex items-center justify-center h-32 relative mt-4 w-full translate-y-2">
+                        {/* Avatar 1 (Green bg) */}
+                        <div className="absolute left-[20px] top-[14px] w-16 h-16 rounded-full bg-[#10b981] flex items-center justify-center text-white border-2 border-[#1e053a] shadow-md z-10">
+                          <svg className="w-12 h-12" viewBox="0 0 100 100" fill="none">
+                            <circle cx="50" cy="50" r="40" fill="#fbcfe8" />
+                            <circle cx="38" cy="45" r="3" fill="#334155" />
+                            <circle cx="62" cy="45" r="3" fill="#334155" />
+                            <path d="M42 60 Q50 66 58 60" stroke="#334155" strokeWidth="4" strokeLinecap="round" fill="none" />
+                            <path d="M20 30 Q30 20 40 25 T60 20 T80 30" stroke="#78350f" strokeWidth="12" strokeLinecap="round" fill="none" />
+                          </svg>
+                        </div>
+
+                        {/* Avatar 2 (Blue bg) */}
+                        <div className="absolute right-[20px] top-[14px] w-16 h-16 rounded-full bg-[#3b82f6] flex items-center justify-center text-white border-2 border-[#1e053a] shadow-md z-10">
+                          <svg className="w-12 h-12" viewBox="0 0 100 100" fill="none">
+                            <circle cx="50" cy="50" r="40" fill="#fed7aa" />
+                            <rect x="28" y="38" width="16" height="12" rx="3" stroke="#334155" strokeWidth="3" fill="none" />
+                            <rect x="56" y="38" width="16" height="12" rx="3" stroke="#334155" strokeWidth="3" fill="none" />
+                            <line x1="44" y1="44" x2="56" y2="44" stroke="#334155" strokeWidth="3" />
+                            <path d="M42 60 Q50 66 58 60" stroke="#334155" strokeWidth="4" strokeLinecap="round" fill="none" />
+                            <path d="M25 35 Q50 15 75 35" stroke="#1e293b" strokeWidth="10" fill="none" />
+                          </svg>
+                        </div>
+
+                        {/* Avatar 3 (Orange bg) */}
+                        <div className="absolute bottom-[5px] w-16 h-16 rounded-full bg-[#fb923c] flex items-center justify-center text-white border-2 border-[#1e053a] shadow-lg z-20">
+                          <svg className="w-12 h-12" viewBox="0 0 100 100" fill="none">
+                            <circle cx="50" cy="50" r="40" fill="#fcd34d" />
+                            <circle cx="38" cy="45" r="3" fill="#334155" />
+                            <circle cx="62" cy="45" r="3" fill="#334155" />
+                            <path d="M42 60 Q50 66 58 60" stroke="#334155" strokeWidth="4" strokeLinecap="round" fill="none" />
+                            <path d="M22 40 C22 20, 78 20, 78 40" stroke="#ec4899" strokeWidth="10" fill="none" />
+                          </svg>
+                        </div>
+                      </div>
                     </div>
-                  </div>
-                </div>
+
+                    {/* Card 2: Connect your apps */}
+                    <div 
+                      onClick={() => alert("App integrations can be managed via the workspace settings panel.")}
+                      className="flex-1 min-w-[200px] max-w-[300px] h-[260px] rounded-2xl border border-[#0284c7]/35 p-5 flex flex-col justify-between cursor-pointer transition-all hover:scale-[1.02] hover:border-white/20 overflow-hidden hover:shadow-[0_16px_36px_rgba(2,132,199,0.4)] shadow-xl"
+                      style={{ background: 'linear-gradient(135deg, #0c4a6e, #031e2e)' }}
+                    >
+                      <div className="flex flex-col text-left">
+                        <div className="text-[16px] font-extrabold text-white tracking-tight leading-tight">Connect your apps</div>
+                        <div className="text-[11.5px] text-white/55 font-semibold mt-1 leading-snug">Bring your work into Slack</div>
+                      </div>
+                      
+                      {/* Mock Integrations UI inside the card */}
+                      <div className="bg-[#131619] border border-white/5 rounded-t-xl p-3 flex flex-col gap-2 w-full mt-4 translate-y-3 shrink-0 shadow-2xl">
+                        <div className="flex items-center gap-1 border-b border-white/5 pb-1 w-full justify-between">
+                          <div className="flex gap-0.5">
+                            <div className="w-1.5 h-1.5 rounded-full bg-red-500" />
+                            <div className="w-1.5 h-1.5 rounded-full bg-yellow-500" />
+                            <div className="w-1.5 h-1.5 rounded-full bg-green-500" />
+                          </div>
+                          <span className="text-[8px] text-white/25 select-none font-bold uppercase tracking-wider font-mono">Apps</span>
+                        </div>
+                        <div className="flex gap-2 justify-center py-3">
+                          <div className="w-8 h-8 rounded bg-blue-500/10 border border-blue-500/30 flex items-center justify-center text-xs shadow-sm hover:bg-blue-500/20 transition-colors">☁️</div>
+                          <div className="w-8 h-8 rounded bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-xs shadow-sm hover:bg-emerald-500/20 transition-colors">📊</div>
+                          <div className="w-8 h-8 rounded bg-purple-500/10 border border-purple-500/30 flex items-center justify-center text-xs shadow-sm hover:bg-purple-500/20 transition-colors">🔐</div>
+                          <div className="w-8 h-8 rounded bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-xs shadow-sm hover:bg-amber-500/20 transition-colors">🛠️</div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Card 3: Personalize welcome */}
+                    <div 
+                      onClick={() => startRecording()}
+                      className="flex-1 min-w-[200px] max-w-[300px] h-[260px] rounded-2xl border border-[#059669]/35 p-5 flex flex-col justify-between cursor-pointer transition-all hover:scale-[1.02] hover:border-white/20 overflow-hidden hover:shadow-[0_16px_36px_rgba(5,150,105,0.4)] shadow-xl"
+                      style={{ background: 'linear-gradient(135deg, #064e3b, #022c22)' }}
+                    >
+                      <div className="flex flex-col text-left">
+                        <div className="text-[16px] font-extrabold text-white tracking-tight leading-tight">Personalize welcome</div>
+                        <div className="text-[11.5px] text-white/55 font-semibold mt-1 leading-snug">Give your audio welcome</div>
+                      </div>
+                      
+                      {/* Waveform Mockup inside the card */}
+                      <div className="bg-[#131619] border border-white/5 rounded-t-xl p-3.5 flex flex-col gap-3 w-full mt-4 translate-y-3 shrink-0 shadow-2xl">
+                        <div className="flex items-center justify-center gap-1.5 h-10 py-1">
+                          <div className="w-0.5 h-3 bg-emerald-400 rounded opacity-60" />
+                          <div className="w-0.5 h-5 bg-emerald-400 rounded opacity-80" />
+                          <div className="w-0.5 h-8 bg-emerald-400 rounded animate-pulse" />
+                          <div className="w-0.5 h-4 bg-emerald-400 rounded opacity-70" />
+                          <div className="w-0.5 h-7 bg-emerald-400 rounded animate-pulse" />
+                          <div className="w-0.5 h-5 bg-emerald-400 rounded opacity-80" />
+                          <div className="w-0.5 h-2 bg-emerald-400 rounded opacity-60" />
+                        </div>
+                        <div className="flex items-center justify-between border-t border-white/5 pt-1.5 w-full text-[8px] text-white/40 font-bold uppercase tracking-wider font-mono">
+                          <span className="flex items-center gap-1 text-[#f43f5e]"><span className="w-1.5 h-1.5 rounded-full bg-[#f43f5e] animate-ping" /> REC</span>
+                          <span>0:03</span>
+                        </div>
+                      </div>
+                    </div>
+                  </>
+                )}
               </div>
-            )}
-          </div>
+            </div>
+          ) : (
+            // DM and Self-Space Welcome block
+            <div className="max-w-3xl text-left bg-[#181d22]/50 border border-white/5 rounded-2xl p-8 hover:bg-[#1a2027]/70 transition-colors">
+              <h2 className="text-4xl font-black text-white mb-3 tracking-tight flex items-center gap-3">
+                {activeChannel === ownerName + ' (you)' && <>📝 This is your space</>}
+                {activeChannel && !activeChannel.startsWith('#') && !activeChannel.startsWith('DM:') && activeChannel !== ownerName + ' (you)' && <>💬 Conversation with <span className="text-[#2dd4bf]">{activeChannel}</span></>}
+                {activeChannel && activeChannel.startsWith('DM:') && <>💬 Conversation with <span className="text-[#2dd4bf]">{activeChannel.replace('DM: ', '')}</span></>}
+              </h2>
+              <p className="text-[15.5px] text-white/60 leading-relaxed font-medium">
+                {activeChannel === ownerName + ' (you)' && (
+                  <>Draft your messages, keep links and files handy 🗂️. And remember, it's perfectly fine to talk to yourself here! 🤖💬</>
+                )}
+                {activeChannel && !activeChannel.startsWith('#') && !activeChannel.startsWith('DM:') && activeChannel !== ownerName + ' (you)' && (
+                  <>This is the beginning of your direct message history with <strong className="text-white/80">{activeChannel}</strong>. Start a private conversation here 🔒.</>
+                )}
+                {activeChannel && activeChannel.startsWith('DM:') && (
+                  <>This is the beginning of your direct message history with <strong className="text-white/80">{activeChannel.replace('DM: ', '')}</strong>. Start a private conversation here 🔒.</>
+                )}
+              </p>
+            </div>
+          )}
         </div>
 
         {/* Messages stream */}
-        <div className="flex flex-col gap-4 mt-auto">
+        <div className="flex flex-col gap-4 mt-auto px-8 pb-4">
           {messageTree.map((msg, idx) => {
             const currentDate = new Date(msg.created_at || Date.now()).toDateString();
             const prevDate = idx > 0 ? new Date(messageTree[idx - 1].created_at || Date.now()).toDateString() : null;
