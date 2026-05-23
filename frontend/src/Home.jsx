@@ -35,11 +35,7 @@ function Home({ userProfile }) {
   const dynamicAllChannelName = 'all-' + wsName.toLowerCase().replace(/\s+/g, '-')
 
   // ── Channels & UI state ───────────────────────────────────────
-  const [channels, setChannels] = useState([
-    { id: 'new', name: 'new-channel' },
-    { id: 'all', name: dynamicAllChannelName },
-    { id: 'fun', name: 'fun&chat' }
-  ])
+  const [channels, setChannels] = useState([])
   const [favourites, setFavourites] = useState([])
   const [invitedList, setInvitedList] = useState([])
   const [showChannelWizard, setShowChannelWizard] = useState(false)
@@ -69,6 +65,7 @@ function Home({ userProfile }) {
     if (!tenantId) return
     const fetch = async () => {
       try {
+        await api.post(`/api/tenants/${tenantId}/select`)
         const [channelsRes, usersRes, unreadRes, notifRes] = await Promise.all([
           api.get('/projects/'),
           api.get('/users/'),
@@ -77,7 +74,7 @@ function Home({ userProfile }) {
         ])
         if (channelsRes.data?.length > 0) {
           const publicChannels = channelsRes.data.filter(p => !p.is_private)
-          if (publicChannels.length > 1) {
+          if (publicChannels.length > 0) {
             setChannels(publicChannels.map(p => ({ id: p.id.toString(), name: p.name })))
           }
         }
@@ -93,13 +90,13 @@ function Home({ userProfile }) {
     fetch()
   }, [tenantId, userProfile?.id])
 
-  // ── Poll unread + notifications every 10s ─────────────────────
+  // ── Poll unread + notifications every 60s ─────────────────────
   useEffect(() => {
     if (!tenantId) return
     const interval = setInterval(() => {
       api.get('/projects/unread-states').then(res => setUnreadStates(res.data)).catch(console.error)
       api.get('/notifications').then(res => setNotifications(res.data)).catch(console.error)
-    }, 10000)
+    }, 60000)
     return () => clearInterval(interval)
   }, [tenantId])
 
@@ -124,10 +121,18 @@ function Home({ userProfile }) {
 
   const formatMsg = (m) => ({
     id: m.id,
-    sender: m.sender_name,
-    initials: m.sender_name ? m.sender_name[0].toUpperCase() : '?',
-    time: new Date(m.created_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }),
-    text: m.content,
+    sender: m.sender_name || m.sender,
+    initials: (m.sender_name || m.sender) ? (m.sender_name || m.sender)[0].toUpperCase() : '?',
+    time: new Date(m.created_at || m.time).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }),
+    text: m.content || m.text,
+    file_url: m.file_url,
+    file_type: m.file_type,
+    account_id: m.account_id,
+    is_pinned: m.is_pinned,
+    is_edited: m.is_edited,
+    reactions: m.reactions || [],
+    parent_id: m.parent_id,
+    created_at: m.created_at || m.time
   })
 
   // ── Switch channel ────────────────────────────────────────────
@@ -154,7 +159,21 @@ function Home({ userProfile }) {
     const ws = new WebSocket(`ws://localhost:8000/ws/${pid}?token=${token}`)
     ws.onmessage = (event) => {
       const msg = JSON.parse(event.data)
-      setChannelMessages(prev => [...prev, formatMsg(msg)])
+      if (msg.type === "MESSAGE_EDITED") {
+        setChannelMessages(prev => prev.map(m => m.id === msg.message_id ? { ...m, text: msg.content, is_edited: true } : m))
+      } else if (msg.type === "MESSAGE_PINNED") {
+        setChannelMessages(prev => prev.map(m => m.id === msg.message_id ? { ...m, is_pinned: msg.is_pinned } : m))
+      } else if (msg.type === "MESSAGE_DELETED") {
+        setChannelMessages(prev => prev.filter(m => m.id !== msg.message_id))
+      } else if (msg.type === "REACTION_UPDATED") {
+        setChannelMessages(prev => prev.map(m => m.id === msg.message_id ? { ...m, reactions: msg.reactions } : m))
+      } else if (msg.type === "NEW_MESSAGE" && msg.message) {
+        if (!msg.message.is_reaction_bump) {
+          setChannelMessages(prev => [...prev, formatMsg(msg.message)])
+        }
+      } else if (!msg.type) {
+        setChannelMessages(prev => [...prev, formatMsg(msg)])
+      }
       api.post(`/projects/${pid}/read`).catch(console.error)
     }
     ws.onerror = (err) => console.error('WS error', err)
@@ -189,7 +208,21 @@ function Home({ userProfile }) {
       const ws = new WebSocket(`ws://localhost:8000/ws/${project.id}?token=${token}`)
       ws.onmessage = (event) => {
         const msg = JSON.parse(event.data)
-        setChannelMessages(prev => [...prev, formatMsg(msg)])
+        if (msg.type === "MESSAGE_EDITED") {
+          setChannelMessages(prev => prev.map(m => m.id === msg.message_id ? { ...m, text: msg.content, is_edited: true } : m))
+        } else if (msg.type === "MESSAGE_PINNED") {
+          setChannelMessages(prev => prev.map(m => m.id === msg.message_id ? { ...m, is_pinned: msg.is_pinned } : m))
+        } else if (msg.type === "MESSAGE_DELETED") {
+          setChannelMessages(prev => prev.filter(m => m.id !== msg.message_id))
+        } else if (msg.type === "REACTION_UPDATED") {
+          setChannelMessages(prev => prev.map(m => m.id === msg.message_id ? { ...m, reactions: msg.reactions } : m))
+        } else if (msg.type === "NEW_MESSAGE" && msg.message) {
+          if (!msg.message.is_reaction_bump) {
+            setChannelMessages(prev => [...prev, formatMsg(msg.message)])
+          }
+        } else if (!msg.type) {
+          setChannelMessages(prev => [...prev, formatMsg(msg)])
+        }
         api.post(`/projects/${project.id}/read`).catch(console.error)
       }
       ws.onerror = (err) => console.error('DM WS error', err)
@@ -213,7 +246,7 @@ function Home({ userProfile }) {
                 (userProfile?.id.toString() === accountId.toString() ? { name: ownerName + ' (you)' } : null)
       if (u) switchDM(accountId, u.name)
     } else {
-      const allCh = channels.find(c => c.id === 'all' || c.name.startsWith('all-'))
+      const allCh = channels.find(c => c.id === 'all' || c.name.startsWith('all-') || c.name === 'general') || channels[0]
       if (allCh && wsName !== 'Workspace') {
         navigate(`/workspace/${tenantId}/c/${allCh.id}`, { replace: true })
       }
@@ -221,9 +254,24 @@ function Home({ userProfile }) {
   }, [projectId, accountId, channels, invitedList, wsName, tenantId, navigate, activeProjectId, userProfile])
 
   // ── Send message ──────────────────────────────────────────────
-  const handleSendMessage = () => {
-    if (!newMessageText.trim() || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return
-    wsRef.current.send(JSON.stringify({ content: newMessageText.trim() }))
+  const handleSendMessage = (content = '', fileUrl = null, fileType = null, parentId = null) => {
+    let text = typeof content === 'string' && content !== '' ? content.trim() : newMessageText.trim()
+    if (text === '<p></p>') text = ''
+    
+    if (!text && !fileUrl) return
+    
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+      alert("Failed to send: You are not connected to the chat server.")
+      return
+    }
+    
+    wsRef.current.send(JSON.stringify({ 
+      content: text,
+      file_url: fileUrl,
+      file_type: fileType,
+      parent_id: parentId
+    }))
+    
     setNewMessageText('')
   }
 
@@ -284,6 +332,8 @@ function Home({ userProfile }) {
         setShowChannelWizard={setShowChannelWizard}
         switchDM={switchDM}
         unreadStates={unreadStates}
+        notifications={notifications}
+        setNotifications={setNotifications}
       />
 
       {/* ── Main content ── */}
@@ -315,6 +365,10 @@ function Home({ userProfile }) {
           channels={channels}
           favourites={favourites}
           setShowMembersModal={setShowMembersModal}
+          invitedList={invitedList}
+          userProfile={userProfile}
+          tenantId={tenantId}
+          setShowInviteModal={setShowInviteModal}
         />
 
         {/* ── Invite people modal ── */}

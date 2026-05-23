@@ -6,6 +6,7 @@ from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel, EmailStr
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
+from sqlalchemy import delete, update
 
 from app.database import get_session
 from app.models import (
@@ -15,6 +16,7 @@ from app.models import (
     Project, ProjectCreate, ProjectRead,
     ProjectMember, ChannelRole,
     Message, MessageRead,
+    Reaction,
     Invitation,
     UserProjectState, Notification,
 )
@@ -37,8 +39,6 @@ class SignupRequest(BaseModel):
 
 class GoogleAuthRequest(BaseModel):
     access_token: str
-    name: str
-    email: EmailStr
 
 
 @asynccontextmanager
@@ -153,14 +153,11 @@ async def auth_signup(
     )
     session.add(membership)
     
-    # 5. Create default Project
-    project = Project(
-        name="general",
-        description="General discussions and updates",
-        tenant_id=tenant.id,
-        created_by=account.id,
-    )
-    session.add(project)
+    # 5. Create default Projects
+    p1 = Project(name="new-channel", description="Project discussions and files", tenant_id=tenant.id, created_by=account.id)
+    p2 = Project(name=f"all-{base_slug}", description="Company-wide announcements and general chat", tenant_id=tenant.id, created_by=account.id)
+    p3 = Project(name="fun&chat", description="Non-work banter and water cooler chat", tenant_id=tenant.id, created_by=account.id)
+    session.add_all([p1, p2, p3])
     
     # 6. Update last_active_tenant_id
     account.last_active_tenant_id = tenant.id
@@ -282,9 +279,6 @@ async def google_auth(
 
     if not google_email:
         raise HTTPException(status_code=400, detail="Google account has no email.")
-
-    if google_email != body.email.lower().strip():
-        raise HTTPException(status_code=400, detail="Email mismatch.")
 
     # ── 2. Find or create account ──────────────────────────────────────
     existing_result = await session.execute(
@@ -580,6 +574,29 @@ async def get_my_tenants(
         .where(User.account_id == current_account.id)
     )
     return list(result.scalars().all())
+
+
+@app.post("/api/tenants/{tenant_id}/select", tags=["Tenants"])
+async def select_tenant(
+    tenant_id: int,
+    session: AsyncSession = Depends(get_session),
+    current_account: Account = Depends(get_current_account),
+):
+    # Verify membership
+    result = await session.execute(
+        select(User).where(User.account_id == current_account.id, User.tenant_id == tenant_id)
+    )
+    membership = result.scalar_one_or_none()
+    if not membership:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You are not a member of this workspace."
+        )
+
+    current_account.last_active_tenant_id = tenant_id
+    session.add(current_account)
+    await session.commit()
+    return {"message": "Active tenant updated successfully", "tenant_id": tenant_id}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1055,28 +1072,305 @@ async def get_message_history(
             )
 
     # Fetch last N messages joined with the account name
+    from sqlalchemy import or_
     result = await session.execute(
         select(Message, Account)
         .join(Account, Message.account_id == Account.id)
-        .where(Message.project_id == project_id)
+        .where(
+            Message.project_id == project_id,
+            or_(Message.file_type != "reaction_bump", Message.file_type.is_(None))
+        )
         .order_by(Message.created_at.asc())
         .limit(limit)
     )
 
+    msg_records = result.all()
+    message_ids = [msg.id for msg, account in msg_records]
+
+    # Fetch all reactions for these messages
+    reactions_dict = {msg_id: [] for msg_id in message_ids}
+    if message_ids:
+        react_result = await session.execute(
+            select(Reaction, Account)
+            .join(Account, Reaction.account_id == Account.id)
+            .where(Reaction.message_id.in_(message_ids))
+        )
+        for reaction, acc in react_result.all():
+            reactions_dict[reaction.message_id].append({
+                "id": reaction.id,
+                "emoji": reaction.emoji,
+                "account_id": reaction.account_id,
+                "sender_name": acc.name
+            })
+
     messages = []
-    for msg, account in result.all():
+    for msg, account in msg_records:
         messages.append(MessageRead(
             id=msg.id,
             content=msg.content,
+            file_url=msg.file_url,
+            file_type=msg.file_type,
             created_at=msg.created_at,
             project_id=msg.project_id,
             account_id=msg.account_id,
             sender_name=account.name,
+            is_pinned=msg.is_pinned,
+            is_edited=msg.is_edited,
+            reactions=reactions_dict[msg.id],
+            parent_id=msg.parent_id
         ))
     return messages
 
 
-@app.post("/projects/{project_id}/read", tags=["Messages"])
+class MessageEditRequest(BaseModel):
+    content: str
+
+@app.patch("/projects/{project_id}/messages/{message_id}", response_model=MessageRead, tags=["Messages"])
+async def edit_message(
+    project_id: int,
+    message_id: int,
+    body: MessageEditRequest,
+    session: AsyncSession = Depends(get_session),
+    membership: User = Depends(get_verified_membership),
+    current_account: Account = Depends(get_current_account),
+):
+    msg_result = await session.execute(
+        select(Message).where(Message.id == message_id, Message.project_id == project_id)
+    )
+    msg = msg_result.scalar_one_or_none()
+    if not msg:
+        raise HTTPException(status_code=404, detail="Message not found")
+        
+    if msg.account_id != current_account.id:
+        raise HTTPException(status_code=403, detail="You can only edit your own messages")
+
+    msg.content = body.content
+    msg.is_edited = True
+    session.add(msg)
+    await session.commit()
+    
+    await ws_manager.broadcast_to_project(project_id, {
+        "type": "MESSAGE_EDITED",
+        "message_id": msg.id,
+        "content": msg.content,
+        "project_id": project_id
+    })
+    
+    return MessageRead(
+        id=msg.id,
+        content=msg.content,
+        file_url=msg.file_url,
+        file_type=msg.file_type,
+        created_at=msg.created_at,
+        project_id=msg.project_id,
+        account_id=msg.account_id,
+        sender_name=current_account.name,
+        is_pinned=msg.is_pinned,
+        is_edited=msg.is_edited,
+        reactions=[],
+        parent_id=msg.parent_id
+    )
+
+@app.delete("/projects/{project_id}/messages/{message_id}", tags=["Messages"])
+async def delete_message(
+    project_id: int,
+    message_id: int,
+    session: AsyncSession = Depends(get_session),
+    membership: User = Depends(get_verified_membership),
+    current_account: Account = Depends(get_current_account),
+):
+    msg_result = await session.execute(
+        select(Message).where(Message.id == message_id, Message.project_id == project_id)
+    )
+    msg = msg_result.scalar_one_or_none()
+    if not msg:
+        raise HTTPException(status_code=404, detail="Message not found")
+        
+    if msg.account_id != current_account.id:
+        raise HTTPException(status_code=403, detail="You can only delete your own messages")
+
+    # 1. Delete child messages (replies and reaction bumps) to prevent ForeignKeyViolations and clean DB
+    child_ids_result = await session.execute(
+        select(Message.id).where(Message.parent_id == message_id)
+    )
+    child_ids = list(child_ids_result.scalars().all())
+    if child_ids:
+        # Delete reactions for child messages
+        await session.execute(
+            delete(Reaction).where(Reaction.message_id.in_(child_ids))
+        )
+        # Delete notifications for child messages
+        await session.execute(
+            delete(Notification).where(Notification.message_id.in_(child_ids))
+        )
+        # Update read states pointing to child messages
+        await session.execute(
+            update(UserProjectState)
+            .where(UserProjectState.last_read_message_id.in_(child_ids))
+            .values(last_read_message_id=None)
+        )
+        # Delete child messages themselves
+        await session.execute(
+            delete(Message).where(Message.id.in_(child_ids))
+        )
+
+    # 2. Delete associated reactions
+    await session.execute(
+        delete(Reaction).where(Reaction.message_id == message_id)
+    )
+
+    # 3. Delete associated notifications
+    await session.execute(
+        delete(Notification).where(Notification.message_id == message_id)
+    )
+
+    # 4. Update read states pointing to this message
+    await session.execute(
+        update(UserProjectState)
+        .where(UserProjectState.last_read_message_id == message_id)
+        .values(last_read_message_id=None)
+    )
+
+    # 5. Delete the message itself
+    await session.delete(msg)
+    await session.commit()
+    
+    # Broadcast deletion to all project members
+    await ws_manager.broadcast_to_project(project_id, {
+        "type": "MESSAGE_DELETED",
+        "message_id": message_id,
+        "project_id": project_id
+    })
+    
+    return {"message": "Message deleted successfully"}
+
+@app.post("/projects/{project_id}/messages/{message_id}/pin", tags=["Messages"])
+async def toggle_pin_message(
+    project_id: int,
+    message_id: int,
+    session: AsyncSession = Depends(get_session),
+    membership: User = Depends(get_verified_membership),
+):
+    msg_result = await session.execute(
+        select(Message).where(Message.id == message_id, Message.project_id == project_id)
+    )
+    msg = msg_result.scalar_one_or_none()
+    if not msg:
+        raise HTTPException(status_code=404, detail="Message not found")
+        
+    msg.is_pinned = not msg.is_pinned
+    session.add(msg)
+    await session.commit()
+    
+    await ws_manager.broadcast_to_project(project_id, {
+        "type": "MESSAGE_PINNED",
+        "message_id": msg.id,
+        "is_pinned": msg.is_pinned,
+        "project_id": project_id
+    })
+    
+    return {"message": "Message pin toggled", "is_pinned": msg.is_pinned}
+
+class ReactionRequest(BaseModel):
+    emoji: str
+
+@app.post("/projects/{project_id}/messages/{message_id}/react", tags=["Messages"])
+async def toggle_reaction(
+    project_id: int,
+    message_id: int,
+    body: ReactionRequest,
+    session: AsyncSession = Depends(get_session),
+    membership: User = Depends(get_verified_membership),
+    current_account: Account = Depends(get_current_account),
+):
+    msg_result = await session.execute(
+        select(Message).where(Message.id == message_id, Message.project_id == project_id)
+    )
+    msg = msg_result.scalar_one_or_none()
+    if not msg:
+        raise HTTPException(status_code=404, detail="Message not found")
+        
+    react_result = await session.execute(
+        select(Reaction).where(
+            Reaction.message_id == message_id,
+            Reaction.account_id == current_account.id,
+            Reaction.emoji == body.emoji
+        )
+    )
+    existing = react_result.scalar_one_or_none()
+    
+    if existing:
+        await session.delete(existing)
+        action = "removed"
+        # Delete any associated reaction_bump message automatically
+        await session.execute(
+            delete(Message).where(
+                Message.project_id == project_id,
+                Message.account_id == current_account.id,
+                Message.parent_id == message_id,
+                Message.file_type == "reaction_bump",
+                Message.content == f"User reacted with {body.emoji}"
+            )
+        )
+        bump_msg = None
+    else:
+        new_react = Reaction(
+            message_id=message_id,
+            account_id=current_account.id,
+            emoji=body.emoji
+        )
+        session.add(new_react)
+        action = "added"
+        # Create the reaction_bump message automatically, linking it via parent_id
+        bump_msg = Message(
+            project_id=project_id,
+            account_id=current_account.id,
+            content=f"User reacted with {body.emoji}",
+            file_type="reaction_bump",
+            parent_id=message_id
+        )
+        session.add(bump_msg)
+        
+    await session.commit()
+    if bump_msg:
+        await session.refresh(bump_msg)
+    
+    all_reacts = await session.execute(
+        select(Reaction, Account)
+        .join(Account, Reaction.account_id == Account.id)
+        .where(Reaction.message_id == message_id)
+    )
+    reactions_list = [{
+        "id": r.id,
+        "emoji": r.emoji,
+        "account_id": r.account_id,
+        "sender_name": a.name
+    } for r, a in all_reacts.all()]
+    
+    await ws_manager.broadcast_to_project(project_id, {
+        "type": "REACTION_UPDATED",
+        "message_id": message_id,
+        "reactions": reactions_list,
+        "project_id": project_id
+    })
+
+    if action == "added" and bump_msg:
+        # We broadcast the bump message but tell the frontend it's a reaction bump
+        await ws_manager.broadcast_to_project(project_id, {
+            "type": "NEW_MESSAGE",
+            "message": {
+                "id": bump_msg.id,
+                "project_id": project_id,
+                "content": bump_msg.content,
+                "account_id": current_account.id,
+                "sender_name": current_account.name,
+                "created_at": bump_msg.created_at.isoformat(),
+                "is_reaction_bump": True
+            }
+        })
+    
+    return {"message": f"Reaction {action}", "reactions": reactions_list}
+
 async def mark_channel_read(
     project_id: int,
     session: AsyncSession = Depends(get_session),
@@ -1295,14 +1589,20 @@ async def websocket_endpoint(
             # ── 4. Receive, persist, broadcast ───────────────────────────────
             data = await websocket.receive_json()
             content = data.get("content", "").strip()
-            if not content:
+            file_url = data.get("file_url")
+            file_type = data.get("file_type")
+            parent_id = data.get("parent_id")
+            if not content and not file_url:
                 continue
 
             # Persist to database
             msg = Message(
                 content=content,
+                file_url=file_url,
+                file_type=file_type,
                 project_id=project_id,
                 account_id=account.id,
+                parent_id=parent_id,
             )
             session.add(msg)
             await session.commit()
@@ -1312,10 +1612,13 @@ async def websocket_endpoint(
             broadcast_payload = {
                 "id": msg.id,
                 "content": msg.content,
+                "file_url": msg.file_url,
+                "file_type": msg.file_type,
                 "created_at": msg.created_at.isoformat(),
                 "project_id": msg.project_id,
                 "account_id": msg.account_id,
                 "sender_name": account.name,
+                "parent_id": msg.parent_id,
             }
 
             # Check for mentions

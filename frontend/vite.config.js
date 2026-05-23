@@ -14,5 +14,8 @@ export default defineConfig({
     // Redirect all 404s back to index.html so React Router can handle
     // deep links like /workspace/3 on page refresh.
     historyApiFallback: true,
+    headers: {
+      'Cross-Origin-Opener-Policy': 'same-origin-allow-popups',
+    },
   },
 })

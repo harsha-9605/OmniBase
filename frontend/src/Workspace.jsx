@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
+import { useGoogleLogin } from '@react-oauth/google'
 import api from './api'
 
-function Workspace({ userProfile, onBack }) {
+function Workspace({ userProfile, onBack, onLogout }) {
   const navigate = useNavigate()
   const location = useLocation()
   const queryParams = new URLSearchParams(location.search)
@@ -20,15 +21,31 @@ function Workspace({ userProfile, onBack }) {
   const [creating, setCreating] = useState(false)
   const [copied, setCopied] = useState(false)
 
+  const handleGoogleContacts = useGoogleLogin({
+    scope: 'https://www.googleapis.com/auth/contacts.readonly',
+    onSuccess: async (tokenResponse) => {
+      try {
+        const res = await api.post('/api/auth/google-contacts', { access_token: tokenResponse.access_token })
+        if (res.data.contacts?.length > 0) {
+          const emails = res.data.contacts.map(c => c.email).join(', ')
+          setTeammateEmails(prev => prev ? prev + ', ' + emails : emails)
+        }
+      } catch (err) {
+        console.error('Failed to fetch google contacts', err)
+      }
+    },
+  })
+
   useEffect(() => {
     const fetchWorkspaces = async () => {
       try {
         const res = await api.get('/tenants/')
         setWorkspaces(res.data)
         
-        // If there is only one workspace, navigate to it automatically
-        if (res.data.length === 1 && !noRedirect) {
-          navigate('/workspace/' + res.data[0].id, { replace: true })
+
+        
+        if (res.data.length === 0) {
+          setShowCreateForm(true)
         }
       } catch (err) {
         console.error("Failed to fetch workspaces", err)
@@ -62,15 +79,32 @@ function Workspace({ userProfile, onBack }) {
 
       // 2. Add members if any
       const emails = teammateEmails.split(',').map(e => e.trim()).filter(Boolean)
-      // Since we don't have a bulk invite route yet or user creation by email, 
-      // we will just skip this for the API and let it be handled later inside the dashboard
+      if (emails.length > 0) {
+        try {
+          await api.post('/api/invite', {
+            emails: emails,
+            workspace_name: finalWsName,
+            base_url: window.location.origin
+          })
+        } catch (inviteErr) {
+          console.error("Failed to send invitations", inviteErr)
+        }
+      }
 
-      // 3. Create a default project for this new workspace
+      // 3. Create default projects for this new workspace
       // The backend /projects/ creates it in the *active* tenant context.
       // The active tenant was just updated when we created the tenant.
       await api.post('/projects/', {
-        name: 'general',
-        description: 'General discussions'
+        name: 'new-channel',
+        description: 'Project discussions and files'
+      })
+      await api.post('/projects/', {
+        name: 'all-' + finalWsName.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
+        description: 'Company-wide announcements and general chat'
+      })
+      await api.post('/projects/', {
+        name: 'fun&chat',
+        description: 'Non-work banter and water cooler chat'
       })
 
       // Update local state and navigate to the new workspace
@@ -116,14 +150,23 @@ function Workspace({ userProfile, onBack }) {
           <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-brand-accent to-brand-accent-2 flex items-center justify-center text-base shadow-[0_0_18px_var(--color-brand-accent-glow)] text-white">⬡</div>
           OmniBase
         </a>
-        <div className="flex flex-col items-end gap-0.5">
-          <span className="text-xs text-text-muted">Missing something?</span>
-          <button 
-            onClick={onBack}
-            className="text-[12.5px] font-semibold text-brand-accent-2 hover:text-purple-300 bg-transparent border-none cursor-pointer transition-colors p-0"
-          >
-            Sign in to another account
-          </button>
+        <div className="flex flex-col items-end gap-1">
+          <span className="text-xs text-text-muted">Signed in as <span className="font-semibold text-white/80">{userProfile?.email || 'Loading...'}</span></span>
+          <div className="flex items-center gap-3">
+            <button 
+              onClick={onBack}
+              className="text-[12px] font-medium text-brand-accent-2 hover:text-purple-300 bg-transparent border-none cursor-pointer transition-colors p-0"
+            >
+              Sign in to another account
+            </button>
+            <span className="w-[1px] h-3 bg-white/20" />
+            <button 
+              onClick={onLogout}
+              className="text-[12.5px] font-semibold text-brand-accent-2 hover:text-purple-300 bg-transparent border-none cursor-pointer transition-colors p-0"
+            >
+              Sign out
+            </button>
+          </div>
         </div>
       </header>
 
@@ -322,7 +365,7 @@ function Workspace({ userProfile, onBack }) {
                         <span className="text-xs font-bold text-white">Add teammate by email</span>
                         <button 
                           type="button"
-                          onClick={() => setTeammateEmails('ellis@gmail.com, maria@gmail.com')}
+                          onClick={() => handleGoogleContacts()}
                           className="flex items-center gap-1.5 text-xs text-[#0ea5e9] hover:underline cursor-pointer bg-transparent border-none p-0 font-medium"
                         >
                           <svg className="w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24">
@@ -355,7 +398,9 @@ function Workspace({ userProfile, onBack }) {
                               <div className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
                               Completing...
                             </>
-                          ) : 'Next'}
+                          ) : (
+                            teammateEmails.trim() ? 'Create Workspace & Send Invites' : 'Create Workspace'
+                          )}
                         </button>
                         
                         <button

@@ -26,7 +26,8 @@ api.interceptors.response.use(
       // Clear token and redirect to login if token is invalid/expired
       localStorage.removeItem('omnibase_token');
       // If we are not already on the landing or auth pages, reload
-      if (window.location.pathname !== '/') {
+      const path = window.location.pathname;
+      if (path !== '/' && path !== '/signin' && path !== '/signup') {
         window.location.reload();
       }
     }

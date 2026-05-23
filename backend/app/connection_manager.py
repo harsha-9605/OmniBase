@@ -69,6 +69,10 @@ class ConnectionManager:
         for ws in dead_sockets:
             self.disconnect(ws, project_id)
 
+    async def broadcast_to_project(self, project_id: int, message: dict) -> None:
+        """Push a JSON message to every active socket in a channel room (alias for broadcast)."""
+        await self.broadcast(message, project_id)
+
     async def personal_broadcast(self, message: dict, account_id: int) -> None:
         """Push a JSON message to every active socket for a specific user."""
         if account_id not in self.personal_rooms:

@@ -120,21 +120,44 @@ class Invitation(SQLModel, table=True):
 class Message(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     content: str
+    file_url: Optional[str] = None
+    file_type: Optional[str] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
     # Foreign keys — links each message to its channel and its author
     project_id: int = Field(foreign_key="project.id", index=True)
     account_id: int = Field(foreign_key="account.id", index=True)
+    parent_id: Optional[int] = Field(default=None, foreign_key="message.id", index=True)
+
+    # Message actions
+    is_pinned: bool = Field(default=False)
+    is_edited: bool = Field(default=False)
+
+
+# ── Reaction ──────────────────────────────────────────────────────────────────
+
+class Reaction(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    message_id: int = Field(foreign_key="message.id", index=True)
+    account_id: int = Field(foreign_key="account.id", index=True)
+    emoji: str
+    created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
 class MessageRead(SQLModel):
     """Response schema — enriched with the sender's display name."""
     id: int
     content: str
+    file_url: Optional[str] = None
+    file_type: Optional[str] = None
     created_at: datetime
     project_id: int
     account_id: int
     sender_name: str
+    is_pinned: bool = False
+    is_edited: bool = False
+    reactions: list[dict] = []
+    parent_id: Optional[int] = None
 
 # ── UserProjectState — Tracks read receipts per user per channel ─────────────
 
@@ -155,4 +178,17 @@ class Notification(SQLModel, table=True):
     message_id: Optional[int] = Field(default=None, foreign_key="message.id")
     content_preview: str
     is_read: bool = Field(default=False)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+# ── ScheduledMessage ──────────────────────────────────────────────────────────
+
+class ScheduledMessage(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    content: str
+    file_url: Optional[str] = None
+    file_type: Optional[str] = None
+    scheduled_for: datetime = Field(index=True)
+    project_id: int = Field(foreign_key="project.id", index=True)
+    account_id: int = Field(foreign_key="account.id", index=True)
+    is_sent: bool = Field(default=False, index=True)
     created_at: datetime = Field(default_factory=datetime.utcnow)

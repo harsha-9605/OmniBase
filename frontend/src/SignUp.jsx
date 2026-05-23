@@ -27,17 +27,9 @@ function SignUp({ mode = 'signup' }) {
       setGoogleLoading(true)
       setError('')
       try {
-        // Get user profile from Google
-        const userInfoRes = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
-          headers: { Authorization: `Bearer ${tokenResponse.access_token}` }
-        })
-        const userInfo = await userInfoRes.json()
-        
         // Send to our backend (using the access token approach)
         const res = await api.post('/auth/google-token', {
           access_token: tokenResponse.access_token,
-          name: userInfo.name,
-          email: userInfo.email,
         })
         
         const { access_token, tenant_id: existing_tenant_id } = res.data
@@ -46,7 +38,7 @@ function SignUp({ mode = 'signup' }) {
         let targetTenantId = existing_tenant_id
         if (wsParam) {
           try {
-            const acceptRes = await api.post('/invite/accept', { workspace_name: wsParam }, {
+            const acceptRes = await api.post('/api/invite/accept', { workspace_name: wsParam }, {
               headers: { Authorization: `Bearer ${access_token}` }
             })
             targetTenantId = acceptRes.data.tenant_id
@@ -90,7 +82,7 @@ function SignUp({ mode = 'signup' }) {
       let targetTenantId = existing_tenant_id
       if (wsParam) {
         try {
-          const acceptRes = await api.post('/invite/accept', { workspace_name: wsParam }, {
+          const acceptRes = await api.post('/api/invite/accept', { workspace_name: wsParam }, {
             headers: { Authorization: `Bearer ${access_token}` }
           })
           targetTenantId = acceptRes.data.tenant_id
@@ -223,21 +215,23 @@ function SignUp({ mode = 'signup' }) {
           </div>
 
           {/* Legal */}
-          <p className="text-[12px] text-text-muted text-center leading-relaxed" id="auth-legal">
+          <p className="text-[12px] text-text-muted text-center leading-relaxed mb-6" id="auth-legal">
             By continuing, you're agreeing to our{' '}
             <a href="#" className="text-text-secondary hover:text-brand-accent-2 underline transition-colors">Terms of Service</a> and{' '}
             <a href="#" className="text-text-secondary hover:text-brand-accent-2 underline transition-colors">Privacy Policy</a>.
           </p>
-        </div>
 
-        {/* Footer Toggle Text */}
-        <p className="text-[13.5px] text-text-muted text-center" id="auth-footer">
-          {isSignIn ? (
-            <>Don't have an account?{' '}<button className="bg-transparent border-none text-brand-accent-2 hover:text-purple-300 font-semibold cursor-pointer transition-colors" id="btn-switch-signup" onClick={() => navigate('/signup')}>Create one free</button></>
-          ) : (
-            <>Already using OmniBase?{' '}<button className="bg-transparent border-none text-brand-accent-2 hover:text-purple-300 font-semibold cursor-pointer transition-colors" id="btn-switch-signin" onClick={() => navigate('/signin')}>Sign in to a workspace</button></>
-          )}
-        </p>
+          {/* Footer Toggle Text */}
+          <div className="pt-6 border-t border-white/10">
+            <p className="text-[13.5px] text-text-muted text-center" id="auth-footer">
+              {isSignIn ? (
+                <>Don't have an account?{' '}<button className="bg-transparent border-none text-brand-accent-2 hover:text-purple-300 font-semibold cursor-pointer transition-colors" id="btn-switch-signup" onClick={() => navigate('/signup')}>Create one free</button></>
+              ) : (
+                <>Already using OmniBase?{' '}<button className="bg-transparent border-none text-brand-accent-2 hover:text-purple-300 font-semibold cursor-pointer transition-colors" id="btn-switch-signin" onClick={() => navigate('/signin')}>Sign in to a workspace</button></>
+              )}
+            </p>
+          </div>
+        </div>
 
         {/* Bottom Nav Links */}
         <div className="flex gap-6 mt-2" id="auth-bottom-nav">

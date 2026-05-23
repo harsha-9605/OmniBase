@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Routes, Route, Navigate, useNavigate } from 'react-router-dom'
+import { Routes, Route, Navigate, useNavigate, useSearchParams } from 'react-router-dom'
 import api from './api'
 import SignUp from './SignUp'
 import Workspace from './Workspace'
@@ -245,7 +245,7 @@ function GlobalWebSocketListener({ userProfile }) {
 
   const handleAccept = async () => {
     try {
-      const res = await api.post('/invite/accept', { workspace_name: inviteModal.workspace_name })
+      const res = await api.post('/api/invite/accept', { workspace_name: inviteModal.workspace_name })
       const newTenantId = res.data.tenant_id
       setInviteModal(null)
       if (newTenantId) {
@@ -287,6 +287,57 @@ function GlobalWebSocketListener({ userProfile }) {
   )
 }
 
+// ─── Invite Handler Route ───────────────────────────────────────────────────
+function InviteHandler() {
+  const [searchParams] = useSearchParams()
+  const navigate = useNavigate()
+  const [status, setStatus] = useState('Processing invitation...')
+
+  useEffect(() => {
+    const ws = searchParams.get('ws')
+    if (!ws) {
+      navigate('/', { replace: true })
+      return
+    }
+
+    const token = localStorage.getItem('omnibase_token')
+    if (!token) {
+      // Not logged in, redirect to signup page with parameters
+      navigate(`/signup?ws=${encodeURIComponent(ws)}`, { replace: true })
+      return
+    }
+
+    // Logged in, automatically accept the invite
+    api.post('/api/invite/accept', { workspace_name: ws })
+      .then(res => {
+        const tenantId = res.data.tenant_id
+        if (tenantId) {
+          localStorage.setItem('omnibase_last_tenant', tenantId.toString())
+          // Redirect to workspace
+          window.location.assign('/workspace/' + tenantId)
+        } else {
+          navigate('/workspaces', { replace: true })
+        }
+      })
+      .catch(err => {
+        console.error("Failed to accept invite", err)
+        setStatus('Failed to accept invitation. The link might be expired or workspace not found.')
+        setTimeout(() => {
+          navigate('/workspaces', { replace: true })
+        }, 3000)
+      })
+  }, [searchParams, navigate])
+
+  return (
+    <div className="min-h-screen bg-brand-bg text-white flex items-center justify-center p-4">
+      <div className="bg-[#16161f] border border-white/8 rounded-2xl p-8 shadow-2xl max-w-sm w-full text-center">
+        <div className="w-10 h-10 border-2 border-brand-accent border-t-transparent rounded-full animate-spin mx-auto mb-4" />
+        <p className="text-sm font-medium text-text-secondary">{status}</p>
+      </div>
+    </div>
+  )
+}
+
 // ─── Root App with Routes ───────────────────────────────────────────────────
 function App() {
   const { userProfile, loading } = useUserProfile()
@@ -306,6 +357,8 @@ function App() {
           token ? <Navigate to="/workspaces" replace /> : <LandingPage />
         } />
 
+        <Route path="/invite" element={<InviteHandler />} />
+
         <Route path="/signup" element={
           token ? <Navigate to="/workspaces" replace /> : <SignUp mode="signup" />
         } />
@@ -323,6 +376,10 @@ function App() {
                 localStorage.removeItem('omnibase_token');
                 window.location.href = '/signin';
               }} 
+              onLogout={() => {
+                localStorage.removeItem('omnibase_token');
+                window.location.href = '/';
+              }}
             />
           </RequireAuth>
         } />

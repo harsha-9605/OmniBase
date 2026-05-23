@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
+import api from '../../api'
 
 export default function Sidebar({
   wsName,
@@ -19,12 +20,50 @@ export default function Sidebar({
   setShowChannelWizard,
   switchDM,
   unreadStates,
+  notifications,
+  setNotifications,
 }) {
   const navigate = useNavigate()
   const { tenantId } = useParams()
   const [showWsMenu, setShowWsMenu] = useState(false)
   const [draggedChannel, setDraggedChannel] = useState(null)
   const [isDragOverFav, setIsDragOverFav] = useState(false)
+  const [onlyUnreads, setOnlyUnreads] = useState(false)
+
+  const handleMarkAsRead = async (n) => {
+    try {
+      await api.post(`/notifications/${n.id}/read`)
+      setNotifications(prev => prev.map(x => x.id === n.id ? { ...x, is_read: true } : x))
+    } catch (err) {
+      console.error("Failed to mark notification as read", err)
+    }
+  }
+
+  const handleNotificationClick = async (n) => {
+    if (!n.is_read) {
+      await handleMarkAsRead(n)
+    }
+    if (n.project_id) {
+      navigate(`/workspace/${tenantId}/c/${n.project_id}`)
+    }
+  }
+
+  const getRelativeTime = (dateStr) => {
+    if (!dateStr) return ''
+    const date = new Date(dateStr)
+    const now = new Date()
+    const diffMs = now - date
+    const diffMins = Math.floor(diffMs / 60000)
+    
+    if (diffMins < 1) return 'now'
+    if (diffMins < 60) return `${diffMins} mins`
+    
+    const diffHours = Math.floor(diffMins / 60)
+    if (diffHours < 24) return `${diffHours} hrs`
+    
+    const diffDays = Math.floor(diffHours / 24)
+    return `${diffDays} days`
+  }
 
   return (
     <aside className="w-[320px] bg-[#0b0f12] border-r border-white/5 flex flex-col justify-between shrink-0 text-sm">
@@ -109,11 +148,13 @@ export default function Sidebar({
                       setSelectedProfile({ name: ownerName, initials: ownerName ? ownerName[0].toUpperCase() : 'H', email: 'You' })
                       setShowRightSidebar(true)
                     }}
-                    className="p-2 flex items-start gap-3 rounded-lg hover:bg-white/5 cursor-pointer transition-colors"
+                    className="p-2 flex items-start gap-3 rounded-lg hover:bg-white/5 cursor-pointer transition-colors group"
                   >
                     <div className="w-9 h-9 rounded-md bg-[#d81b60] text-white font-bold text-sm flex items-center justify-center shrink-0 relative mt-0.5">
                       {ownerName ? ownerName[0].toUpperCase() : 'H'}
-                      <div className="absolute -bottom-1 -right-1 w-3.5 h-3.5 rounded-full bg-emerald-500 border-[2.5px] border-[#1e2329]" />
+                      <div className="absolute -bottom-1 -right-1 w-3.5 h-3.5 rounded-full bg-[#1e2329] group-hover:bg-[#252a30] transition-colors flex items-center justify-center">
+                        <div className="w-2.5 h-2.5 rounded-full bg-[#10b981]" />
+                      </div>
                     </div>
                     <div className="flex flex-col flex-1 min-w-0">
                       <div className="flex items-center gap-1.5">
@@ -125,6 +166,7 @@ export default function Sidebar({
                   </div>
                   {invitedList.length > 0 && invitedList.map((userObj, i) => {
                     const name = userObj.name || userObj.email.split('@')[0]
+                    const isOnline = userObj.is_online // Assume true/false
                     return (
                       <div
                         key={i}
@@ -133,11 +175,17 @@ export default function Sidebar({
                           setSelectedProfile({ name, initials: name[0].toUpperCase(), email: userObj.email })
                           setShowRightSidebar(true)
                         }}
-                        className="p-2 flex items-start gap-3 rounded-lg hover:bg-white/5 cursor-pointer transition-colors border-t border-white/5 mt-1 pt-3"
+                        className="p-2 flex items-start gap-3 rounded-lg hover:bg-white/5 cursor-pointer transition-colors border-t border-white/5 mt-1 pt-3 group"
                       >
                         <div className="w-9 h-9 rounded-md bg-indigo-500 text-white font-bold text-sm flex items-center justify-center shrink-0 relative mt-0.5">
                           {name[0].toUpperCase()}
-                          <div className="absolute -bottom-1 -right-1 w-3.5 h-3.5 rounded-full bg-transparent border-[2.5px] border-white/40" />
+                          <div className="absolute -bottom-1 -right-1 w-3.5 h-3.5 rounded-full bg-[#1e2329] group-hover:bg-[#252a30] transition-colors flex items-center justify-center">
+                            {isOnline ? (
+                               <div className="w-2.5 h-2.5 rounded-full bg-[#10b981]" />
+                            ) : (
+                               <div className="w-2 h-2 rounded-full border-[1.5px] border-white/50 bg-transparent" />
+                            )}
+                          </div>
                         </div>
                         <div className="flex flex-col flex-1 min-w-0 justify-center">
                           <span className="font-bold text-white text-[15px] truncate">{name}</span>
@@ -167,19 +215,89 @@ export default function Sidebar({
                     <span className="text-white/50 hover:text-white cursor-pointer pb-2.5">All</span>
                     <span className="text-white/50 hover:text-white cursor-pointer pb-2.5">DMs</span>
                   </div>
-                  <div className="flex items-center gap-2 text-xs text-white/60 font-medium mb-2.5">
+                  <button 
+                    onClick={() => setOnlyUnreads(!onlyUnreads)}
+                    className="flex items-center gap-2 text-xs text-white/60 font-medium mb-2.5 cursor-pointer bg-transparent border-none outline-none"
+                  >
                     <span>Unreads</span>
-                    <div className="w-8 h-4 bg-white/10 rounded-full relative cursor-pointer hover:bg-white/20 transition-colors">
-                      <div className="w-3.5 h-3.5 bg-white/60 rounded-full absolute left-0.5 top-[1px]"></div>
+                    <div className={`w-8 h-4 rounded-full relative transition-colors ${onlyUnreads ? 'bg-[#2dd4bf]' : 'bg-white/10'}`}>
+                      <div className={`w-3.5 h-3.5 bg-white rounded-full absolute top-[1px] transition-all duration-200 ${onlyUnreads ? 'translate-x-3.5' : 'translate-x-0'}`}></div>
                     </div>
-                  </div>
+                  </button>
                 </div>
-                <div className="flex-1 flex flex-col items-center justify-center p-6 text-center">
-                  <div className="w-14 h-14 bg-[#78b368] rounded-xl flex items-center justify-center mb-5 shadow-inner">
-                    <span className="text-2xl text-white">✓</span>
-                  </div>
-                  <h3 className="text-[17px] font-bold text-white mb-2">All caught up</h3>
-                  <p className="text-[15px] text-white/60 leading-relaxed max-w-[280px]">Looks like things are quiet for now. When there's new activity, it'll be here.</p>
+                
+                <div className="flex-1 overflow-y-auto p-2 flex flex-col gap-1.5 text-left">
+                  {((notifications || []).filter(n => !onlyUnreads || !n.is_read)).length === 0 ? (
+                    <div className="flex-1 flex flex-col items-center justify-center p-6 text-center">
+                      <div className="w-14 h-14 bg-[#78b368] rounded-xl flex items-center justify-center mb-5 shadow-inner">
+                        <span className="text-2xl text-white">✓</span>
+                      </div>
+                      <h3 className="text-[17px] font-bold text-white mb-2">All caught up</h3>
+                      <p className="text-[15px] text-white/60 leading-relaxed max-w-[280px]">Looks like things are quiet for now. When there's new activity, it'll be here.</p>
+                    </div>
+                  ) : (
+                    ((notifications || []).filter(n => !onlyUnreads || !n.is_read)).map(n => {
+                      const channelName = channels.find(c => c.id.toString() === n.project_id?.toString())?.name || 'channel'
+                      const isUnread = !n.is_read
+                      
+                      return (
+                        <div
+                          key={n.id}
+                          onClick={() => handleNotificationClick(n)}
+                          className={`p-3 rounded-lg flex items-start justify-between gap-3 cursor-pointer transition-all relative border border-white/5 ${
+                            isUnread 
+                              ? 'bg-white/[0.04] hover:bg-white/[0.08] text-white' 
+                              : 'bg-black/15 hover:bg-white/2 text-white/40'
+                          }`}
+                        >
+                          <div className="flex gap-3 min-w-0">
+                            <div className="w-8 h-8 rounded-lg bg-white/5 flex items-center justify-center shrink-0 border border-white/5">
+                              <svg className={`w-4 h-4 ${isUnread ? 'text-white/85' : 'text-white/25'}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
+                                <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
+                              </svg>
+                            </div>
+                            
+                            <div className="flex flex-col min-w-0 text-left">
+                              <div className="flex items-center gap-1.5">
+                                <span className={`text-[12.5px] ${isUnread ? 'font-bold text-white' : 'font-medium text-white/40'}`}>
+                                  {n.type === 'mention' ? 'Mention' : 'Reminder'}
+                                </span>
+                                <span className="text-[11px] text-white/30 truncate">
+                                  Post in #{channelName}
+                                </span>
+                              </div>
+                              <p className={`text-[13px] mt-0.5 truncate max-w-[200px] leading-relaxed ${isUnread ? 'text-white/90 font-medium' : 'text-white/30'}`}>
+                                {n.content_preview}
+                              </p>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-2 shrink-0 self-center">
+                            <span className="text-[10px] text-white/30 font-medium">{getRelativeTime(n.created_at)}</span>
+                            {isUnread ? (
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleMarkAsRead(n);
+                                }}
+                                className="w-6 h-6 rounded bg-[#2dd4bf]/20 hover:bg-[#2dd4bf]/40 border border-[#2dd4bf]/30 flex items-center justify-center text-[#2dd4bf] hover:text-white transition-all cursor-pointer shadow-sm animate-pulse"
+                                title="Mark as read"
+                              >
+                                <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
+                                  <polyline points="20 6 9 17 4 12"></polyline>
+                                </svg>
+                              </button>
+                            ) : (
+                              <svg className="w-4 h-4 text-[#2dd4bf] ml-1" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                                <polyline points="20 6 9 17 4 12"></polyline>
+                              </svg>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
                 </div>
               </div>
             </div>
@@ -298,13 +416,16 @@ export default function Sidebar({
             >
               <div className="relative w-6 h-6 rounded bg-[#d81b60] text-white font-bold text-[11px] flex items-center justify-center shrink-0">
                 {ownerName ? ownerName[0].toUpperCase() : 'H'}
-                <div className="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full bg-emerald-500" />
+                <div className="absolute -bottom-1 -right-1 w-3 h-3 bg-[#0b0f12] rounded-full flex items-center justify-center group-hover:bg-[#11171d] transition-colors">
+                  <div className="w-2.5 h-2.5 rounded-full bg-[#10b981]" />
+                </div>
               </div>
               <span className="truncate">{ownerName}</span>
               <span className="text-[10px] px-1.5 py-0.5 bg-white/10 rounded text-white/50 ml-auto font-normal">you</span>
             </button>
             {invitedList.map((userObj, index) => {
               const displayName = userObj.name || userObj.email.split('@')[0]
+              const isOnline = userObj.is_online // Assume true/false
               return (
                 <button
                   key={index}
@@ -313,11 +434,17 @@ export default function Sidebar({
                     setSelectedProfile({ name: displayName, initials: displayName[0].toUpperCase(), email: userObj.email })
                     setShowRightSidebar(true)
                   }}
-                  className={`w-full flex items-center gap-3 px-6 py-2 rounded-md text-[14px] transition-colors cursor-pointer text-left font-medium ${activeChannel === 'DM: ' + displayName ? 'bg-[#0d9488]/20 text-[#2dd4bf] font-semibold' : 'text-white/70 hover:text-white hover:bg-white/4'}`}
+                  className={`w-full flex items-center gap-3 px-6 py-2 rounded-md text-[14px] transition-colors cursor-pointer text-left font-medium group ${activeChannel === 'DM: ' + displayName ? 'bg-[#0d9488]/20 text-[#2dd4bf] font-semibold' : 'text-white/70 hover:text-white hover:bg-white/4'}`}
                 >
                   <div className="relative w-6 h-6 rounded bg-indigo-500 text-white font-bold text-[11px] flex items-center justify-center shrink-0">
                     {displayName[0].toUpperCase()}
-                    <div className="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full bg-emerald-400" />
+                    <div className={`absolute -bottom-1 -right-1 w-3 h-3 rounded-full flex items-center justify-center transition-colors ${activeChannel === 'DM: ' + displayName ? 'bg-[#1a383b]' : 'bg-[#0b0f12] group-hover:bg-[#11171d]'}`}>
+                      {isOnline ? (
+                         <div className="w-2.5 h-2.5 rounded-full bg-[#10b981]" />
+                      ) : (
+                         <div className="w-1.5 h-1.5 rounded-full border-[1.5px] border-white/50 bg-transparent" />
+                      )}
+                    </div>
                   </div>
                   <span className="truncate">{displayName}</span>
                 </button>
@@ -349,7 +476,9 @@ export default function Sidebar({
         <div className="flex items-center gap-2.5 min-w-0">
           <div className="relative w-8 h-8 rounded-lg bg-[#d81b60] text-white font-bold text-xs flex items-center justify-center shrink-0">
             {ownerName ? ownerName[0].toUpperCase() : 'H'}
-            <div className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-emerald-500 border-2 border-[#080b0e]" />
+            <div className="absolute -bottom-1 -right-1 w-3 h-3 bg-[#080b0e] rounded-full flex items-center justify-center">
+              <div className="w-2.5 h-2.5 rounded-full bg-[#10b981]" />
+            </div>
           </div>
           <div className="flex flex-col min-w-0 text-left">
             <span className="text-[13px] font-bold text-white truncate">{ownerName}</span>

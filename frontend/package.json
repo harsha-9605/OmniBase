@@ -10,13 +10,28 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@giphy/js-fetch-api": "^5.8.0",
+    "@giphy/react-components": "^10.1.2",
     "@react-oauth/google": "^0.13.5",
+    "@supabase/supabase-js": "^2.106.1",
     "@tailwindcss/vite": "^4.0.0",
+    "@tiptap/extension-bubble-menu": "^3.23.5",
+    "@tiptap/extension-code": "^3.23.5",
+    "@tiptap/extension-code-block": "^3.23.5",
+    "@tiptap/extension-link": "^3.23.5",
+    "@tiptap/extension-mention": "^3.23.5",
+    "@tiptap/extension-placeholder": "^3.23.5",
+    "@tiptap/extension-underline": "^3.23.5",
+    "@tiptap/react": "^3.23.5",
+    "@tiptap/starter-kit": "^3.23.5",
     "axios": "^1.16.1",
+    "emoji-picker-react": "^4.19.1",
+    "lucide-react": "^1.16.0",
     "react": "^19.2.5",
     "react-dom": "^19.2.5",
     "react-router-dom": "^7.15.1",
-    "tailwindcss": "^4.0.0"
+    "tailwindcss": "^4.0.0",
+    "tippy.js": "^6.3.7"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
