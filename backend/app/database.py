@@ -3,6 +3,9 @@ import ssl
 from urllib.parse import urlparse, urlencode, parse_qs, urlunparse
 from sqlmodel import SQLModel
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+from sqlalchemy import event, text
+from contextvars import ContextVar
+from typing import Optional
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
@@ -44,9 +47,31 @@ engine = create_async_engine(
     DATABASE_URL,
     echo=False,
     connect_args=connect_args,
+    pool_size=20,
+    max_overflow=10,
+    pool_timeout=30,
     pool_pre_ping=True,
     pool_recycle=300,   # recycle connections every 5 min, well within Neon's idle timeout
 )
+
+# ContextVar to store the current tenant_id and account_id for the request scope
+tenant_context: ContextVar[Optional[int]] = ContextVar("tenant_context", default=None)
+account_context: ContextVar[Optional[int]] = ContextVar("account_context", default=None)
+
+@event.listens_for(engine.sync_engine, "begin")
+def set_tenant_session_variable(conn):
+    """Propagate the tenant_context and account_context values into PostgreSQL transaction-local setting."""
+    t_id = tenant_context.get()
+    a_id = account_context.get()
+    t_val = str(t_id) if t_id is not None else ""
+    a_val = str(a_id) if a_id is not None else ""
+    # Use set_config to avoid SQL injection risks with utility statements
+    conn.execute(
+        text("SELECT set_config('app.current_tenant_id', :t_val, true), set_config('app.current_account_id', :a_val, true)"),
+        {"t_val": t_val, "a_val": a_val}
+    )
+
+
 
 # Session maker for FastAPI dependency
 async_session_maker = async_sessionmaker(engine, expire_on_commit=False)
@@ -54,3 +79,4 @@ async_session_maker = async_sessionmaker(engine, expire_on_commit=False)
 async def get_session() -> AsyncSession:
     async with async_session_maker() as session:
         yield session
+

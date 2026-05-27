@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import { Routes, Route, Navigate, useNavigate, useSearchParams } from 'react-router-dom'
 import api from './api'
 import SignUp from './SignUp'
@@ -26,20 +26,32 @@ function useUserProfile() {
   const [userProfile, setUserProfile] = useState(null)
   const [loading, setLoading] = useState(true)
 
-  useEffect(() => {
+  const refreshProfile = useCallback(() => {
     const token = localStorage.getItem('omnibase_token')
     if (!token) {
+      setUserProfile(null)
       setLoading(false)
-      return
+      return Promise.resolve(null)
     }
-    api.get('/accounts/me')
-      .then(res => setUserProfile(res.data))
-      .catch(err => console.error('Failed to fetch profile', err))
+    return api.get('/accounts/me')
+      .then(res => {
+        setUserProfile(res.data)
+        return res.data
+      })
+      .catch(err => {
+        console.error('Failed to fetch profile', err)
+        setUserProfile(null)
+      })
       .finally(() => setLoading(false))
   }, [])
 
-  return { userProfile, loading }
+  useEffect(() => {
+    refreshProfile()
+  }, [refreshProfile])
+
+  return { userProfile, loading, refreshProfile }
 }
+
 
 // ─── Landing page ───────────────────────────────────────────────────────────
 const messages = [
@@ -346,7 +358,7 @@ function InviteHandler() {
 
 // ─── Root App with Routes ───────────────────────────────────────────────────
 function App() {
-  const { userProfile, loading } = useUserProfile()
+  const { userProfile, loading, refreshProfile } = useUserProfile()
   const token = localStorage.getItem('omnibase_token')
 
   if (loading) {
@@ -366,11 +378,11 @@ function App() {
         <Route path="/invite" element={<InviteHandler />} />
 
         <Route path="/signup" element={
-          token ? <Navigate to="/workspaces" replace /> : <SignUp mode="signup" />
+          token ? <Navigate to="/workspaces" replace /> : <SignUp mode="signup" refreshProfile={refreshProfile} />
         } />
 
         <Route path="/signin" element={
-          token ? <Navigate to="/workspaces" replace /> : <SignUp mode="signin" />
+          token ? <Navigate to="/workspaces" replace /> : <SignUp mode="signin" refreshProfile={refreshProfile} />
         } />
 
         {/* Protected routes */}
@@ -378,6 +390,7 @@ function App() {
           <RequireAuth>
             <Workspace 
               userProfile={userProfile} 
+              refreshProfile={refreshProfile}
               onBack={() => {
                 localStorage.removeItem('omnibase_token');
                 window.location.href = '/signin';
@@ -393,19 +406,20 @@ function App() {
         {/* Workspace routes with optional channel/DM paths */}
         <Route path="/workspace/:tenantId" element={
           <RequireAuth>
-            <Home userProfile={userProfile} />
+            <Home userProfile={userProfile} refreshProfile={refreshProfile} />
           </RequireAuth>
         } />
         <Route path="/workspace/:tenantId/c/:projectId" element={
           <RequireAuth>
-            <Home userProfile={userProfile} />
+            <Home userProfile={userProfile} refreshProfile={refreshProfile} />
           </RequireAuth>
         } />
         <Route path="/workspace/:tenantId/dm/:accountId" element={
           <RequireAuth>
-            <Home userProfile={userProfile} />
+            <Home userProfile={userProfile} refreshProfile={refreshProfile} />
           </RequireAuth>
         } />
+
 
         {/* Fallback */}
         <Route path="*" element={<Navigate to="/" replace />} />

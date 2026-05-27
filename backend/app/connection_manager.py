@@ -5,8 +5,8 @@ Tracks every active browser connection, grouped by project_id (channel room).
 Handles connect, disconnect, and fan-out broadcast atomically.
 """
 
+import json
 from fastapi import WebSocket
-import asyncio
 
 
 class ConnectionManager:
@@ -15,6 +15,8 @@ class ConnectionManager:
         self.rooms: dict[int, list[WebSocket]] = {}
         # { account_id: [WebSocket, ...] }
         self.personal_rooms: dict[int, list[WebSocket]] = {}
+        # Redis client reference for Pub/Sub publishing
+        self.redis_client = None
 
     async def connect(self, websocket: WebSocket, project_id: int, account_id: int = None) -> None:
         """Accept the handshake and register the socket in the correct room."""
@@ -48,11 +50,23 @@ class ConnectionManager:
                 del self.personal_rooms[account_id]
 
     async def broadcast(self, message: dict, project_id: int) -> None:
-        """Push a JSON message to every active socket in a channel room.
+        """Broadcast a message. Publishes to Redis Pub/Sub if available, otherwise sends locally."""
+        if self.redis_client is not None:
+            payload = {
+                "type": "project",
+                "target_id": project_id,
+                "payload": message
+            }
+            try:
+                await self.redis_client.publish("ws_channel_broadcast", json.dumps(payload))
+                return
+            except Exception as e:
+                print(f"Failed to publish to Redis Pub/Sub: {e}. Falling back to local broadcast.")
+        
+        await self.broadcast_local(message, project_id)
 
-        Dead connections are silently removed so one broken client cannot
-        block the rest of the room from receiving messages.
-        """
+    async def broadcast_local(self, message: dict, project_id: int) -> None:
+        """Deliver a message locally to active sockets in the local room."""
         if project_id not in self.rooms:
             return
 
@@ -62,10 +76,8 @@ class ConnectionManager:
             try:
                 await websocket.send_json(message)
             except Exception:
-                # Connection is dead — mark for cleanup after iteration
                 dead_sockets.append(websocket)
 
-        # Clean up broken connections discovered during broadcast
         for ws in dead_sockets:
             self.disconnect(ws, project_id)
 
@@ -74,7 +86,23 @@ class ConnectionManager:
         await self.broadcast(message, project_id)
 
     async def personal_broadcast(self, message: dict, account_id: int) -> None:
-        """Push a JSON message to every active socket for a specific user."""
+        """Broadcast personally to a user. Publishes to Redis Pub/Sub if available, otherwise sends locally."""
+        if self.redis_client is not None:
+            payload = {
+                "type": "personal",
+                "target_id": account_id,
+                "payload": message
+            }
+            try:
+                await self.redis_client.publish("ws_channel_broadcast", json.dumps(payload))
+                return
+            except Exception as e:
+                print(f"Failed to publish to Redis Pub/Sub: {e}. Falling back to local personal broadcast.")
+                
+        await self.personal_broadcast_local(message, account_id)
+
+    async def personal_broadcast_local(self, message: dict, account_id: int) -> None:
+        """Deliver a personal message locally to active sockets for a specific user."""
         if account_id not in self.personal_rooms:
             return
 
@@ -87,8 +115,9 @@ class ConnectionManager:
                 dead_sockets.append(websocket)
 
         for ws in dead_sockets:
-            self.disconnect(ws, 0, account_id) # Using 0 as dummy project_id since it's handled properly
+            self.disconnect(ws, 0, account_id)
 
 
 # Singleton — shared across the entire FastAPI process lifetime
 manager = ConnectionManager()
+

@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useGoogleLogin } from '@react-oauth/google'
 import api from './api'
 
-function SignUp({ mode = 'signup' }) {
+function SignUp({ mode = 'signup', refreshProfile }) {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const isSignIn = mode === 'signin'
@@ -14,7 +14,7 @@ function SignUp({ mode = 'signup' }) {
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const wsParam = searchParams.get('ws')
-
+  
   const [googleLoading, setGoogleLoading] = useState(false)
 
   // Google One-Tap / popup sign-in handler
@@ -34,6 +34,9 @@ function SignUp({ mode = 'signup' }) {
         
         const { access_token, tenant_id: existing_tenant_id } = res.data
         localStorage.setItem('omnibase_token', access_token)
+        if (refreshProfile) {
+          await refreshProfile()
+        }
         
         let targetTenantId = existing_tenant_id
         if (wsParam) {
@@ -78,6 +81,9 @@ function SignUp({ mode = 'signup' }) {
       
       const { access_token, tenant_id: existing_tenant_id } = res.data
       localStorage.setItem('omnibase_token', access_token)
+      if (refreshProfile) {
+        await refreshProfile()
+      }
       
       let targetTenantId = existing_tenant_id
       if (wsParam) {
@@ -103,6 +109,7 @@ function SignUp({ mode = 'signup' }) {
       setLoading(false)
     }
   }
+
 
   return (
     <div className="relative min-h-screen bg-brand-bg text-text-primary overflow-x-hidden flex flex-col justify-center items-center py-10 px-6">

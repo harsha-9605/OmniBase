@@ -3,7 +3,7 @@ import { useNavigate, useLocation } from 'react-router-dom'
 import { useGoogleLogin } from '@react-oauth/google'
 import api from './api'
 
-function Workspace({ userProfile, onBack, onLogout }) {
+function Workspace({ userProfile, refreshProfile, onBack, onLogout }) {
   const navigate = useNavigate()
   const location = useLocation()
   const queryParams = new URLSearchParams(location.search)
@@ -70,6 +70,18 @@ function Workspace({ userProfile, onBack, onLogout }) {
     setCreating(true)
 
     try {
+      // 0. Update account name if user specified one in Step 2 of the wizard
+      if (userName.trim()) {
+        try {
+          await api.patch('/accounts/me', { name: userName.trim() })
+          if (refreshProfile) {
+            await refreshProfile()
+          }
+        } catch (nameErr) {
+          console.error("Failed to update account name in wizard", nameErr)
+        }
+      }
+
       // 1. Create the tenant
       const tenantRes = await api.post('/tenants/', {
         name: finalWsName,

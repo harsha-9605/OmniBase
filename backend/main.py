@@ -1,12 +1,16 @@
 from contextlib import asynccontextmanager
 import os, re, urllib.request, urllib.parse, json
-from fastapi import FastAPI, Depends, HTTPException, status, WebSocket, WebSocketDisconnect, Query
+from typing import Optional
+from fastapi import FastAPI, Depends, HTTPException, status, WebSocket, WebSocketDisconnect, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel, EmailStr
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 from sqlalchemy import delete, update
+from arq import create_pool
+from arq.connections import RedisSettings
+from urllib.parse import urlparse
 
 from app.database import get_session
 from app.models import (
@@ -21,13 +25,19 @@ from app.models import (
     UserProjectState, Notification,
 )
 from app.auth import hash_password, verify_password, create_access_token, decode_access_token
-from app.dependencies import get_current_account, get_tenant_context, get_verified_membership
+from app.dependencies import get_current_account, get_tenant_context, get_verified_membership, clear_account_cache
 from app.connection_manager import manager as ws_manager
 
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 
+# Parse Redis URL for RedisSettings
+parsed_redis = urlparse(REDIS_URL)
+redis_host = parsed_redis.hostname or "localhost"
+redis_port = parsed_redis.port or 6379
+redis_password = parsed_redis.password or None
 
-# ── Pydantic schema for JSON-body login ───────────────────────────────────────
+# Pydantic schema for JSON-body login
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str
@@ -41,10 +51,105 @@ class GoogleAuthRequest(BaseModel):
     access_token: str
 
 
+import asyncio
+
+async def redis_pubsub_listener(app: FastAPI):
+    """Background listener that subscribes to ws_channel_broadcast and forwards messages to local sockets."""
+    pool = getattr(app.state, "arq_pool", None)
+    if not pool:
+        print("PubSub Listener: Redis pool not available, exiting listener.")
+        return
+
+    pubsub = pool.pubsub()
+    await pubsub.subscribe("ws_channel_broadcast")
+    print("Subscribed to Redis Pub/Sub: ws_channel_broadcast")
+
+    try:
+        async for message in pubsub.listen():
+            if message["type"] == "message":
+                try:
+                    data = json.loads(message["data"])
+                    msg_type = data.get("type")
+                    target_id = data.get("target_id")
+                    payload = data.get("payload")
+
+                    if msg_type == "project":
+                        await ws_manager.broadcast_local(payload, target_id)
+                    elif msg_type == "personal":
+                        await ws_manager.personal_broadcast_local(payload, target_id)
+                except Exception as e:
+                    print(f"PubSub Listener error parsing message: {e}")
+    except asyncio.CancelledError:
+        print("PubSub Listener task cancelled.")
+    except Exception as e:
+        print(f"PubSub Listener encountered connection error: {e}")
+    finally:
+        try:
+            await pubsub.unsubscribe("ws_channel_broadcast")
+            await pubsub.close()
+        except Exception:
+            pass
+        print("PubSub Listener closed connection.")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("OmniBase API starting up. Alembic handles migrations.")
+    print("OmniBase API starting up. Connecting to Redis...")
+    try:
+        app.state.arq_pool = await create_pool(
+            RedisSettings(
+                host=redis_host,
+                port=redis_port,
+                password=redis_password,
+            )
+        )
+        print("Connected to Redis successfully.")
+        ws_manager.redis_client = app.state.arq_pool
+        app.state.pubsub_task = asyncio.create_task(redis_pubsub_listener(app))
+    except Exception as e:
+        print(f"Warning: Failed to connect to Redis: {e}. Background tasks will fall back to synchronous execution.")
+        app.state.arq_pool = None
+        app.state.pubsub_task = None
+        ws_manager.redis_client = None
     yield
+    if getattr(app.state, "pubsub_task", None):
+        app.state.pubsub_task.cancel()
+        try:
+            await app.state.pubsub_task
+        except asyncio.CancelledError:
+            pass
+    if getattr(app.state, "arq_pool", None):
+        await app.state.arq_pool.close()
+        print("Redis pool closed.")
+class RateLimiter:
+    def __init__(self, limit: int, window: int = 60, route_name: str = "default"):
+        self.limit = limit
+        self.window = window
+        self.route_name = route_name
+
+    async def __call__(self, request: Request):
+        redis_client = getattr(request.app.state, "arq_pool", None)
+        if not redis_client:
+            return  # Bypass rate limiter if Redis is not configured
+        
+        ip = request.client.host if request.client else "127.0.0.1"
+        key = f"ratelimit:ip:{ip}:route:{self.route_name}"
+        
+        try:
+            count = await redis_client.incr(key)
+            if count == 1:
+                await redis_client.expire(key, self.window)
+            
+            if count > self.limit:
+                raise HTTPException(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail=f"Too many requests on {self.route_name}. Please try again in {self.window} seconds."
+                )
+        except HTTPException:
+            raise
+        except Exception as e:
+            print(f"Rate Limiter Exception: {e}")
+
 
 app = FastAPI(
     title="OmniBase API",
@@ -90,7 +195,7 @@ async def health_check():
 # AUTH — Register & Login
 # ─────────────────────────────────────────────────────────────────────────────
 
-@app.post("/accounts/register", response_model=dict, tags=["Auth"])
+@app.post("/accounts/register", dependencies=[Depends(RateLimiter(limit=5, route_name="register"))], response_model=dict, tags=["Auth"])
 async def register(
     account_in: AccountCreate,
     session: AsyncSession = Depends(get_session),
@@ -119,7 +224,7 @@ async def register(
     return {"message": "Account created successfully", "account_id": account.id, "name": account.name}
 
 
-@app.post("/auth/signup", response_model=dict, tags=["Auth"])
+@app.post("/auth/signup", dependencies=[Depends(RateLimiter(limit=5, route_name="signup"))], response_model=dict, tags=["Auth"])
 async def auth_signup(
     body: SignupRequest,
     session: AsyncSession = Depends(get_session),
@@ -189,7 +294,7 @@ async def auth_signup(
     }
 
 
-@app.post("/token", tags=["Auth"])
+@app.post("/token", dependencies=[Depends(RateLimiter(limit=5, route_name="login"))], tags=["Auth"])
 async def login(
     form_data: OAuth2PasswordRequestForm = Depends(),
     session: AsyncSession = Depends(get_session),
@@ -216,7 +321,7 @@ async def login(
     return {"access_token": token, "token_type": "bearer"}
 
 
-@app.post("/accounts/login", response_model=dict, tags=["Auth"])
+@app.post("/accounts/login", dependencies=[Depends(RateLimiter(limit=5, route_name="login"))], response_model=dict, tags=["Auth"])
 async def login_json(
     body: LoginRequest,
     session: AsyncSession = Depends(get_session),
@@ -257,7 +362,51 @@ async def get_me(current_account: Account = Depends(get_current_account)):
     }
 
 
-@app.post("/auth/google-token", response_model=dict, tags=["Auth"])
+class AccountUpdate(BaseModel):
+    name: Optional[str] = None
+    email: Optional[str] = None
+
+
+@app.patch("/accounts/me", response_model=dict, tags=["Auth"])
+async def update_me(
+    body: AccountUpdate,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    current_account: Account = Depends(get_current_account),
+):
+    """Updates the currently authenticated account's details."""
+    if body.name is not None:
+        current_account.name = body.name
+    if body.email is not None:
+        new_email = body.email.lower().strip()
+        if new_email != current_account.email.lower().strip():
+            existing = await session.execute(
+                select(Account).where(Account.email == new_email)
+            )
+            if existing.scalar_one_or_none():
+                raise HTTPException(status_code=400, detail="Email already in use.")
+            current_account.email = new_email
+            
+    session.add(current_account)
+    await session.commit()
+    await session.refresh(current_account)
+    
+    # Invalidate session cache in Redis
+    redis_client = getattr(request.app.state, "arq_pool", None)
+    if redis_client:
+        from app.dependencies import clear_account_cache
+        await clear_account_cache(current_account.id, redis_client)
+        
+    return {
+        "id": current_account.id,
+        "name": current_account.name,
+        "email": current_account.email,
+        "last_active_tenant_id": current_account.last_active_tenant_id,
+    }
+
+
+
+@app.post("/auth/google-token", dependencies=[Depends(RateLimiter(limit=5, route_name="login"))], response_model=dict, tags=["Auth"])
 async def google_auth(
     body: GoogleAuthRequest,
     session: AsyncSession = Depends(get_session),
@@ -371,6 +520,7 @@ class InviteRequest(BaseModel):
 @app.post("/api/invite", tags=["Invites"])
 async def send_invites(
     body: InviteRequest,
+    request: Request,
     session: AsyncSession = Depends(get_session),
     membership: User = Depends(get_verified_membership),
     current_account: Account = Depends(get_current_account),
@@ -415,40 +565,47 @@ async def send_invites(
                     "invited_by": current_account.name
                 }, invited_account.id)
 
-            # 3. Send Email
-            msg = MIMEMultipart()
-            msg['From'] = gmail_user
-            msg['To'] = recipient
-            msg['Subject'] = f"OmniBase: You've been invited to join the {body.workspace_name} workspace"
-
+            # 3. Send Email (via ARQ worker or local synchronous fallback)
             safe_ws = urllib.parse.quote(body.workspace_name)
             safe_email = urllib.parse.quote(recipient)
             invite_url = f"{body.base_url}/signup?ws={safe_ws}&email={safe_email}"
 
-            html = f"""
-            <html>
-              <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
-                <h2 style="color: #2dd4bf;">Welcome to OmniBase</h2>
-                <p>Hello,</p>
-                <p>An engineer has invited you to collaborate on the <strong>{body.workspace_name}</strong> workspace inside OmniBase—a high-performance, real-time developer collaboration cluster.</p>
-                <p>By joining this workspace, you will gain instant access to live team channels, automated project resource boards, and integrated AI assistant utilities built directly into your communication streams.</p>
-                <div style="margin: 30px 0;">
-                  <a href="{invite_url}" style="background-color: #3b82f6; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold;">Accept Invitation & Join Team</a>
-                </div>
-                <hr style="border: none; border-top: 1px solid #eee; margin: 30px 0;" />
-                <p style="font-size: 12px; color: #999;">Security Note: This invitation token expires in 48 hours.</p>
-              </body>
-            </html>
-            """
-            
-            msg.attach(MIMEText(html, 'html'))
+            arq_pool = getattr(request.app.state, "arq_pool", None)
+            if arq_pool:
+                await arq_pool.enqueue_job("send_invite_email", recipient, body.workspace_name, invite_url)
+                print(f"Enqueued background task to send invite to {recipient}")
+                success_count += 1
+            else:
+                msg = MIMEMultipart()
+                msg['From'] = gmail_user
+                msg['To'] = recipient
+                msg['Subject'] = f"OmniBase: You've been invited to join the {body.workspace_name} workspace"
 
-            server = smtplib.SMTP(mail_server, mail_port)
-            server.starttls()
-            server.login(gmail_user, gmail_password)
-            server.send_message(msg)
-            server.quit()
-            success_count += 1
+                html = f"""
+                <html>
+                  <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+                    <h2 style="color: #2dd4bf;">Welcome to OmniBase</h2>
+                    <p>Hello,</p>
+                    <p>An engineer has invited you to collaborate on the <strong>{body.workspace_name}</strong> workspace inside OmniBase—a high-performance, real-time developer collaboration cluster.</p>
+                    <p>By joining this workspace, you will gain instant access to live team channels, automated project resource boards, and integrated AI assistant utilities built directly into your communication streams.</p>
+                    <div style="margin: 30px 0;">
+                      <a href="{invite_url}" style="background-color: #3b82f6; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold;">Accept Invitation & Join Team</a>
+                    </div>
+                    <hr style="border: none; border-top: 1px solid #eee; margin: 30px 0;" />
+                    <p style="font-size: 12px; color: #999;">Security Note: This invitation token expires in 48 hours.</p>
+                  </body>
+                </html>
+                """
+                
+                msg.attach(MIMEText(html, 'html'))
+
+                server = smtplib.SMTP(mail_server, mail_port)
+                server.starttls()
+                server.login(gmail_user, gmail_password)
+                server.send_message(msg)
+                server.quit()
+                print(f"Sent invite synchronously to {recipient}")
+                success_count += 1
         except Exception as e:
             errors.append(f"Failed for {recipient}: {str(e)}")
 
@@ -546,6 +703,7 @@ async def fetch_google_contacts(
 @app.post("/tenants/", response_model=Tenant, tags=["Tenants"])
 async def create_tenant(
     tenant_in: TenantCreate,
+    request: Request,
     session: AsyncSession = Depends(get_session),
     current_account: Account = Depends(get_current_account),
 ):
@@ -570,6 +728,11 @@ async def create_tenant(
 
     await session.commit()
     await session.refresh(tenant)
+
+    # Clear account session cache so the new last_active_tenant_id takes effect
+    redis_client = getattr(request.app.state, "arq_pool", None)
+    await clear_account_cache(current_account.id, redis_client)
+
     return tenant
 
 
@@ -590,6 +753,7 @@ async def get_my_tenants(
 @app.post("/api/tenants/{tenant_id}/select", tags=["Tenants"])
 async def select_tenant(
     tenant_id: int,
+    request: Request,
     session: AsyncSession = Depends(get_session),
     current_account: Account = Depends(get_current_account),
 ):
@@ -607,6 +771,11 @@ async def select_tenant(
     current_account.last_active_tenant_id = tenant_id
     session.add(current_account)
     await session.commit()
+
+    # Clear account session cache so the updated last_active_tenant_id takes effect
+    redis_client = getattr(request.app.state, "arq_pool", None)
+    await clear_account_cache(current_account.id, redis_client)
+
     return {"message": "Active tenant updated successfully", "tenant_id": tenant_id}
 
 
@@ -723,6 +892,75 @@ async def list_projects(
     dm_projects = list(dm_result.scalars().all())
 
     return public_projects + dm_projects
+
+
+@app.get("/projects/unread-states", tags=["Projects"])
+async def get_unread_states(
+    session: AsyncSession = Depends(get_session),
+    membership: User = Depends(get_verified_membership),
+):
+    """Returns a map of {project_id: unread_count} for the active tenant.
+    
+    IMPORTANT: This route MUST be defined before any /projects/{project_id}/...
+    routes so FastAPI matches the literal 'unread-states' string instead of
+    trying to parse it as an integer project_id.
+    """
+    from sqlalchemy import func
+    # 1. Get user's read states
+    states_result = await session.execute(
+        select(UserProjectState).where(UserProjectState.account_id == membership.account_id)
+    )
+    states = {s.project_id: s.last_read_message_id for s in states_result.scalars().all()}
+    
+    # 2. Get all projects the user has access to in this tenant
+    public_result = await session.execute(
+        select(Project.id).where(
+            Project.tenant_id == membership.tenant_id,
+            Project.is_private == False,
+        )
+    )
+    public_pids = list(public_result.scalars().all())
+
+    dm_result = await session.execute(
+        select(Project.id)
+        .join(ProjectMember, ProjectMember.project_id == Project.id)
+        .where(
+            Project.tenant_id == membership.tenant_id,
+            Project.is_private == True,
+            ProjectMember.account_id == membership.account_id,
+        )
+    )
+    dm_pids = list(dm_result.scalars().all())
+    
+    all_pids = public_pids + dm_pids
+    if not all_pids:
+        return {}
+        
+    # 3. Count unread messages per project (messages after last_read that weren't sent by current user)
+    counts_result = await session.execute(
+        select(Message.project_id, func.count(Message.id), func.max(Message.id))
+        .where(Message.project_id.in_(all_pids))
+        .group_by(Message.project_id)
+    )
+    
+    unread_map = {}
+    for pid, total_msgs, max_id in counts_result.all():
+        last_read = states.get(pid, 0) or 0
+        if last_read < max_id:
+            unread_msgs_result = await session.execute(
+                select(func.count(Message.id))
+                .where(
+                    Message.project_id == pid,
+                    Message.id > last_read,
+                    Message.account_id != membership.account_id
+                )
+            )
+            unread_map[pid] = unread_msgs_result.scalar_one_or_none() or 0
+        else:
+            unread_map[pid] = 0
+            
+    return unread_map
+
 
 @app.get("/projects/{project_id}/members", tags=["Projects"])
 async def get_project_members(
@@ -1037,6 +1275,24 @@ async def delete_project(
     return {"message": f"Project '{project.name}' deleted successfully."}
 
 
+async def clear_message_cache(project_id: int, redis_client) -> None:
+    """Scan and delete all cached message history variants for a project room to invalidate cache."""
+    if not redis_client:
+        return
+    try:
+        pattern = f"messages:project_id:{project_id}:*"
+        keys = []
+        cur = b"0"
+        while cur:
+            cur, chunk = await redis_client.scan(cur, match=pattern, count=100)
+            keys.extend(chunk)
+        if keys:
+            await redis_client.delete(*keys)
+            print(f"Cache Invalidation: Deleted {len(keys)} cache keys matching {pattern}")
+    except Exception as e:
+        print(f"Error invalidating message cache for project {project_id}: {e}")
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # MESSAGES — REST history + WebSocket real-time
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1044,6 +1300,7 @@ async def delete_project(
 @app.get("/projects/{project_id}/messages", response_model=list[MessageRead], tags=["Messages"])
 async def get_message_history(
     project_id: int,
+    request: Request,
     limit: int = 50,
     session: AsyncSession = Depends(get_session),
     membership: User = Depends(get_verified_membership),
@@ -1054,6 +1311,19 @@ async def get_message_history(
       1. The project must belong to the caller's active tenant.
       2. If the project is private (DM), the caller must be a ProjectMember.
     """
+    # ── Check Cache First ─────────────────────────────────────────────────────
+    redis_client = getattr(request.app.state, "arq_pool", None)
+    cache_key = f"messages:project_id:{project_id}:limit:{limit}"
+    if redis_client:
+        try:
+            cached_val = await redis_client.get(cache_key)
+            if cached_val:
+                print(f"Cache Hit: Loaded messages for project {project_id} (limit {limit}) from Redis.")
+                data = json.loads(cached_val)
+                return [MessageRead.model_validate(m) for m in data]
+        except Exception as e:
+            print(f"Redis Cache GET exception: {e}")
+
     # Layer 1: tenant scope
     proj_result = await session.execute(
         select(Project).where(
@@ -1130,7 +1400,18 @@ async def get_message_history(
             reactions=reactions_dict[msg.id],
             parent_id=msg.parent_id
         ))
+
+    # ── Populate Cache ────────────────────────────────────────────────────────
+    if redis_client:
+        try:
+            cache_payload = [m.model_dump(mode="json") for m in messages]
+            await redis_client.setex(cache_key, 300, json.dumps(cache_payload))
+            print(f"Cache Miss: Saved messages for project {project_id} (limit {limit}) to Redis.")
+        except Exception as e:
+            print(f"Redis Cache SET exception: {e}")
+
     return messages
+
 
 
 class MessageEditRequest(BaseModel):
@@ -1141,6 +1422,7 @@ async def edit_message(
     project_id: int,
     message_id: int,
     body: MessageEditRequest,
+    request: Request,
     session: AsyncSession = Depends(get_session),
     membership: User = Depends(get_verified_membership),
     current_account: Account = Depends(get_current_account),
@@ -1159,6 +1441,10 @@ async def edit_message(
     msg.is_edited = True
     session.add(msg)
     await session.commit()
+    
+    # Invalidate messages cache for this project
+    redis_client = getattr(request.app.state, "arq_pool", None)
+    await clear_message_cache(project_id, redis_client)
     
     await ws_manager.broadcast_to_project(project_id, {
         "type": "MESSAGE_EDITED",
@@ -1186,6 +1472,7 @@ async def edit_message(
 async def delete_message(
     project_id: int,
     message_id: int,
+    request: Request,
     session: AsyncSession = Depends(get_session),
     membership: User = Depends(get_verified_membership),
     current_account: Account = Depends(get_current_account),
@@ -1246,6 +1533,10 @@ async def delete_message(
     await session.delete(msg)
     await session.commit()
     
+    # Invalidate messages cache for this project
+    redis_client = getattr(request.app.state, "arq_pool", None)
+    await clear_message_cache(project_id, redis_client)
+    
     # Broadcast deletion to all project members
     await ws_manager.broadcast_to_project(project_id, {
         "type": "MESSAGE_DELETED",
@@ -1259,6 +1550,7 @@ async def delete_message(
 async def toggle_pin_message(
     project_id: int,
     message_id: int,
+    request: Request,
     session: AsyncSession = Depends(get_session),
     membership: User = Depends(get_verified_membership),
 ):
@@ -1272,6 +1564,10 @@ async def toggle_pin_message(
     msg.is_pinned = not msg.is_pinned
     session.add(msg)
     await session.commit()
+    
+    # Invalidate messages cache for this project
+    redis_client = getattr(request.app.state, "arq_pool", None)
+    await clear_message_cache(project_id, redis_client)
     
     await ws_manager.broadcast_to_project(project_id, {
         "type": "MESSAGE_PINNED",
@@ -1290,6 +1586,7 @@ async def toggle_reaction(
     project_id: int,
     message_id: int,
     body: ReactionRequest,
+    request: Request,
     session: AsyncSession = Depends(get_session),
     membership: User = Depends(get_verified_membership),
     current_account: Account = Depends(get_current_account),
@@ -1345,6 +1642,10 @@ async def toggle_reaction(
     await session.commit()
     if bump_msg:
         await session.refresh(bump_msg)
+        
+    # Invalidate messages cache for this project
+    redis_client = getattr(request.app.state, "arq_pool", None)
+    await clear_message_cache(project_id, redis_client)
     
     all_reacts = await session.execute(
         select(Reaction, Account)
@@ -1382,6 +1683,7 @@ async def toggle_reaction(
     
     return {"message": f"Reaction {action}", "reactions": reactions_list}
 
+@app.post("/projects/{project_id}/read", tags=["Projects"])
 async def mark_channel_read(
     project_id: int,
     session: AsyncSession = Depends(get_session),
@@ -1418,71 +1720,6 @@ async def mark_channel_read(
     await session.commit()
     return {"message": "Read receipt updated"}
 
-
-@app.get("/projects/unread-states", tags=["Projects"])
-async def get_unread_states(
-    session: AsyncSession = Depends(get_session),
-    membership: User = Depends(get_verified_membership),
-):
-    """Returns a map of {project_id: unread_count} for the active tenant."""
-    # Get all projects the user has access to in this tenant
-    # (Simplified for now: we just count messages > last_read_message_id for all projects)
-    # We will do this via a few queries
-    
-    # 1. Get user's read states
-    states_result = await session.execute(
-        select(UserProjectState).where(UserProjectState.account_id == membership.account_id)
-    )
-    states = {s.project_id: s.last_read_message_id for s in states_result.scalars().all()}
-    
-    # 2. Get the latest message ID for all projects in this tenant
-    # To keep it simple, we iterate over projects the user can see (from list_projects logic)
-    
-    public_result = await session.execute(
-        select(Project.id).where(
-            Project.tenant_id == membership.tenant_id,
-            Project.is_private == False,
-        )
-    )
-    public_pids = list(public_result.scalars().all())
-
-    dm_result = await session.execute(
-        select(Project.id)
-        .join(ProjectMember, ProjectMember.project_id == Project.id)
-        .where(
-            Project.tenant_id == membership.tenant_id,
-            Project.is_private == True,
-            ProjectMember.account_id == membership.account_id,
-        )
-    )
-    dm_pids = list(dm_result.scalars().all())
-    
-    all_pids = public_pids + dm_pids
-    if not all_pids:
-        return {}
-        
-    # Find latest message for each project, and total count for each project
-    from sqlalchemy import func
-    counts_result = await session.execute(
-        select(Message.project_id, func.count(Message.id), func.max(Message.id))
-        .where(Message.project_id.in_(all_pids))
-        .group_by(Message.project_id)
-    )
-    
-    unread_map = {}
-    for pid, total_msgs, max_id in counts_result.all():
-        last_read = states.get(pid, 0) or 0
-        if last_read < max_id:
-            # For exact count, we should count messages > last_read
-            unread_msgs_result = await session.execute(
-                select(func.count(Message.id))
-                .where(Message.project_id == pid, Message.id > last_read)
-            )
-            unread_map[pid] = unread_msgs_result.scalar_one_or_none() or 0
-        else:
-            unread_map[pid] = 0
-            
-    return unread_map
 
 
 @app.get("/notifications", tags=["Notifications"])
@@ -1618,6 +1855,10 @@ async def websocket_endpoint(
             session.add(msg)
             await session.commit()
             await session.refresh(msg)
+
+            # Invalidate messages cache for this project
+            redis_client = getattr(websocket.app.state, "arq_pool", None)
+            await clear_message_cache(project_id, redis_client)
 
             # Build enriched broadcast payload
             broadcast_payload = {

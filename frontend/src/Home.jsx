@@ -15,7 +15,7 @@ import Header from './components/layout/Header'
 import ChatArea from './components/chat/ChatArea'
 import { ChannelCreationWizard, PrivateChannelMembersModal } from './components/modals/ChannelModals'
 
-function Home({ userProfile }) {
+function Home({ userProfile, refreshProfile }) {
   const { tenantId, projectId, accountId } = useParams()
   const navigate = useNavigate()
 
@@ -65,6 +65,13 @@ function Home({ userProfile }) {
   const [activeChannel, setActiveChannel] = useState('')
   const [activeProjectId, setActiveProjectId] = useState(null)
   const wsRef = useRef(null)
+
+  // ── Safety profile loader ──
+  useEffect(() => {
+    if (!userProfile && localStorage.getItem('omnibase_token')) {
+      refreshProfile?.()
+    }
+  }, [userProfile, refreshProfile])
 
   // ── Initial data fetch ────────────────────────────────────────
   useEffect(() => {
@@ -180,7 +187,9 @@ function Home({ userProfile }) {
       } else if (!msg.type) {
         setChannelMessages(prev => [...prev, formatMsg(msg)])
       }
-      api.post(`/projects/${pid}/read`).catch(console.error)
+      api.post(`/projects/${pid}/read`).then(() => {
+        setUnreadStates(prev => ({ ...prev, [pid]: 0 }))
+      }).catch(console.error)
     }
     ws.onerror = (err) => console.error('WS error', err)
     ws.onclose = () => { if (wsRef.current === ws) wsRef.current = null }
@@ -229,7 +238,9 @@ function Home({ userProfile }) {
         } else if (!msg.type) {
           setChannelMessages(prev => [...prev, formatMsg(msg)])
         }
-        api.post(`/projects/${project.id}/read`).catch(console.error)
+        api.post(`/projects/${project.id}/read`).then(() => {
+          setUnreadStates(prev => ({ ...prev, [project.id]: 0 }))
+        }).catch(console.error)
       }
       ws.onerror = (err) => console.error('DM WS error', err)
       ws.onclose = () => { if (wsRef.current === ws) wsRef.current = null }
