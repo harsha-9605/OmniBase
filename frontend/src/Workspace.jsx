@@ -338,7 +338,7 @@ function Workspace({ userProfile, refreshProfile, onBack, onLogout }) {
                     <div className="flex flex-col gap-2.5 text-left">
                       <span className="text-xs font-bold text-white">Add a photo <span className="text-text-muted font-normal">(optional)</span></span>
                       <div className="relative w-14 h-14 rounded-xl bg-[#d81b60] flex items-center justify-center text-white font-extrabold text-2xl shadow-md">
-                        {userName.trim() ? userName.trim()[0].toUpperCase() : 'H'}
+                        {userName.trim() ? userName.trim()[0].toUpperCase() : (userProfile?.name?.[0] || 'Y').toUpperCase()}
                         <div className="absolute -bottom-1.5 -right-1.5 w-6 h-6 rounded-full bg-[#1e293b] border border-white/20 flex items-center justify-center cursor-pointer hover:bg-[#334155] transition-colors shadow-sm group">
                           <svg className="w-3 h-3 text-white group-hover:scale-110 transition-transform" viewBox="0 0 12 12" fill="none">
                             <path d="M8.5 1.5a1 1 0 111.4 1.4L3.5 9.5 1 10l.5-2.5 7-7z" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/>
@@ -529,10 +529,10 @@ function Workspace({ userProfile, refreshProfile, onBack, onLogout }) {
                     {/* Active User DM Mock */}
                     <div className="flex items-center gap-1.5 px-1 py-1 rounded bg-white/5">
                       <div className="w-4 h-4 rounded bg-[#d81b60] flex items-center justify-center text-white font-bold text-[9px] shrink-0">
-                        {userName.trim() ? userName.trim()[0].toUpperCase() : 'H'}
+                        {userName.trim() ? userName.trim()[0].toUpperCase() : (userProfile?.name?.[0] || 'Y').toUpperCase()}
                       </div>
                       <span className="truncate max-w-[85px] text-white font-medium text-[11.5px]">
-                        {userName.trim() || (userProfile?.email || '').split('@')[0] || 'Team Member'}
+                        {userName.trim() || userProfile?.name || 'You'}
                       </span>
                       <span className="text-[8.5px] bg-white/15 text-white/70 px-1 rounded shrink-0 font-medium tracking-tighter ml-auto">you</span>
                     </div>
@@ -571,11 +571,11 @@ function Workspace({ userProfile, refreshProfile, onBack, onLogout }) {
                   <div className="flex-1 p-3 flex flex-col justify-end gap-2.5 bg-white">
                     <div className="flex items-start gap-2">
                       <div className="w-5 h-5 rounded bg-[#d81b60] flex items-center justify-center text-white font-bold text-[10px] shrink-0 mt-0.5">
-                        {userName.trim() ? userName.trim()[0].toUpperCase() : 'H'}
+                        {userName.trim() ? userName.trim()[0].toUpperCase() : (userProfile?.name?.[0] || 'Y').toUpperCase()}
                       </div>
                       <div className="flex flex-col min-w-0">
                         <span className="text-[10px] font-extrabold text-gray-800 leading-tight truncate">
-                          {userName.trim() || (userProfile?.email || '').split('@')[0] || 'Team Member'}
+                          {userName.trim() || userProfile?.name || 'You'}
                         </span>
                         <span className="text-[11px] text-gray-600 leading-snug mt-0.5">
                           Setting up the workspace flow! ✨

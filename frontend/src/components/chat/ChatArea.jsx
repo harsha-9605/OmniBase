@@ -95,7 +95,9 @@ export default function ChatArea({
   
   const [showEmojiPicker, setShowEmojiPicker] = useState(false)
   const [showGifPicker, setShowGifPicker] = useState(false)
-  
+  const [gifSearchQuery, setGifSearchQuery] = useState('')
+  const gifSearchRef = useRef(null)
+
   // Audio Recording State
   const [isRecording, setIsRecording] = useState(false)
   const [recordingTime, setRecordingTime] = useState(0)
@@ -736,7 +738,10 @@ export default function ChatArea({
     setShowGifPicker(false)
   }
 
-  const fetchGifs = (offset) => gf.trending({ offset, limit: 10 })
+  const fetchGifs = (offset) =>
+    gifSearchQuery.trim()
+      ? gf.search(gifSearchQuery.trim(), { offset, limit: 10 })
+      : gf.trending({ offset, limit: 10 })
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden relative">
@@ -1125,13 +1130,37 @@ export default function ChatArea({
         )}
         
         {showGifPicker && (
-          <div className="gif-picker-container absolute bottom-[100%] right-20 mb-2 z-50 bg-[#222222] border border-white/10 rounded-xl overflow-hidden shadow-2xl w-[320px] h-[350px] flex flex-col">
+          <div className="gif-picker-container absolute bottom-[100%] right-20 mb-2 z-50 bg-[#222222] border border-white/10 rounded-xl overflow-hidden shadow-2xl w-[320px] h-[400px] flex flex-col">
             <div className="flex justify-between items-center bg-[#1b1f24] p-3 border-b border-white/5">
               <span className="font-bold text-sm">Select GIF</span>
-              <button onClick={()=>setShowGifPicker(false)} className="text-white/50 hover:text-white p-1"><X size={16}/></button>
+              <button onClick={() => { setShowGifPicker(false); setGifSearchQuery(''); }} className="text-white/50 hover:text-white p-1"><X size={16}/></button>
+            </div>
+            {/* Search bar */}
+            <div className="px-2 pt-2 pb-1 bg-[#1b1f24]">
+              <div className="flex items-center gap-2 bg-[#131619] border border-white/10 rounded-lg px-3 py-1.5 focus-within:border-[#38bdf8]/50 transition-colors">
+                <svg className="w-3.5 h-3.5 text-white/40 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
+                <input
+                  ref={gifSearchRef}
+                  type="text"
+                  value={gifSearchQuery}
+                  onChange={e => setGifSearchQuery(e.target.value)}
+                  placeholder="Search GIPHY..."
+                  className="flex-1 bg-transparent text-xs text-white placeholder-white/30 focus:outline-none"
+                  autoFocus
+                />
+                {gifSearchQuery && (
+                  <button onClick={() => setGifSearchQuery('')} className="text-white/30 hover:text-white/70 transition-colors">
+                    <X size={12} />
+                  </button>
+                )}
+              </div>
             </div>
             <div className="flex-1 overflow-y-auto p-2 bg-[#131619]">
-              <Grid width={300} columns={2} fetchGifs={fetchGifs} onGifClick={onGifClick} />
+              <Grid key={gifSearchQuery} width={300} columns={2} fetchGifs={fetchGifs} onGifClick={onGifClick} />
+            </div>
+            {/* GIPHY attribution */}
+            <div className="bg-[#1b1f24] py-1.5 px-3 border-t border-white/5 flex items-center justify-center">
+              <span className="text-[9px] text-white/20 font-bold tracking-widest uppercase">Powered by GIPHY</span>
             </div>
           </div>
         )}
