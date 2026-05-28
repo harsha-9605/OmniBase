@@ -16,12 +16,9 @@ api.interceptors.request.use(
       config.headers.Authorization = `Bearer ${token}`;
     }
     
-    // Automatically extract tenant ID from URL or local storage
+    // Automatically extract tenant ID from URL
     const match = window.location.pathname.match(/\/workspace\/(\d+)/);
-    let tenantId = match ? match[1] : null;
-    if (!tenantId) {
-      tenantId = localStorage.getItem('omnibase_last_tenant');
-    }
+    const tenantId = match ? match[1] : null;
     if (tenantId) {
       config.headers['X-Tenant-ID'] = tenantId;
     }
